@@ -3,7 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { fileUri } from '@kit.CoreFileKit';
 import { ChatStore } from '../store/ChatStore';
-import { Peer, Message, Attachment, APP_VERSION, ASSISTANT_ID, isImage, sizeLabel } from '../model/Models';
+import { Peer, Message, Attachment, APP_VERSION, ASSISTANT_ID, isImage, sizeLabel, formatMessageDate } from '../model/Models';
 
 // onIdle runs after this frame's layout/draw, so the new message has its final height.
 class AfterChatLayout extends FrameCallback {
@@ -163,9 +163,13 @@ struct Index {
   }
   private send(): void {
     if (!this.store || this.submitting) { return; }
-    this.submitting = true;
     const peer = this.selected;
     const text = this.draft;
+    if (!text.trim() && this.store.attachments(peer).length === 0) {
+      this.getUIContext().getPromptAction().showToast({ message: '请先输入文字或添加图片、文件' });
+      return;
+    }
+    this.submitting = true;
     this.store.submit(peer, text).then((sent: boolean) => {
       if (sent && this.selected === peer && this.draft === text) { this.draft = ''; }
       if (sent && this.selected === peer) { this.followLatest = true; this.scrollToLatest(); }
@@ -325,7 +329,7 @@ struct Index {
           Text(this.title()).fontSize(16).fontWeight(FontWeight.Medium).fontColor(INK).maxLines(1)
           if (this.deviceType()) { Text(this.deviceType()).fontSize(10).fontColor(BLUE) }
         }
-        Text(this.selected === ASSISTANT_ID ? '仅保存在本机' : (this.online() ? '在线 · 局域网直连' : '离线 · 可查看历史'))
+        Text(this.selected === ASSISTANT_ID ? '仅保存在本机' : (this.online() ? '在线 · 局域网直连' : '离线 · 留言将在上线后发送'))
           .fontSize(10).fontColor(MUTED)
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
     }.width('100%').padding({ left: 10, right: 16, top: 8, bottom: 8 }).backgroundColor('#DAEBF9')
@@ -381,7 +385,7 @@ struct Index {
             .padding(12).backgroundColor(message.mine ? '#CAE4F7' : '#FFFFFF').borderRadius(6)
         }
         Row({ space: 8 }) {
-          Text(new Date(message.date).toLocaleTimeString()).fontSize(9).fontColor(MUTED)
+          Text(formatMessageDate(message.date)).fontSize(9).fontColor(MUTED)
           if (!message.name && message.mine) { Text(message.status).fontSize(9).fontColor(MUTED) }
           Text('复制').fontSize(10).fontColor(BLUE).onClick(() => this.copy(message))
           Text('删除').fontSize(10).fontColor(MUTED).onClick(() => this.confirmDelete(message))
@@ -408,34 +412,36 @@ struct Index {
         Blank()
         Text(this.selected === ASSISTANT_ID ? '仅本机' : '局域网直传').fontSize(10).fontColor(MUTED)
       }.width('100%')
-      if ((this.state.attachments.length || 0) > 0) {
-        Scroll() {
-          Row({ space: 8 }) {
-            ForEach(this.state.attachments || [], (attachment: Attachment) => {
-              Column({ space: 2 }) {
-                if (isImage(attachment.name)) {
-                  Image(fileUri.getUriFromPath(attachment.path)).width(72).height(52).objectFit(ImageFit.Contain)
-                    .onClick(() => { this.previewPath = attachment.path; })
-                } else { Text(attachment.name).fontSize(10).width(84).height(52).maxLines(3) }
-                Text('移除').fontSize(10).fontColor(BLUE).onClick(() => this.store?.removeAttachment(this.selected, attachment.id))
-              }.padding(4).borderRadius(4).backgroundColor('#F1F5F9')
-            }, (attachment: Attachment) => attachment.id)
-          }
-        }.scrollable(ScrollDirection.Horizontal).width('100%').height(78)
-      }
       Row({ space: 8 }) {
-        TextArea({ text: this.draft, placeholder: this.online() ? '写点什么…' : '对方离线，可先写草稿' })
-          .minLines(1).maxLines(5).constraintSize({ minHeight: 38, maxHeight: 118 })
-          .padding({ left: 10, right: 10, top: 9, bottom: 9 }).fontSize(14).borderRadius(5).backgroundColor('#F2F5F8').layoutWeight(1)
-          .onChange((value: string) => { this.draft = value; })
-          .onFocus(() => { this.composerFocused = true; this.scrollToLatest(); })
-          .onBlur(() => { this.composerFocused = false; })
+        Column({ space: 0 }) {
+          if ((this.state.attachments.length || 0) > 0) {
+            Scroll() {
+              Row({ space: 8 }) {
+                ForEach(this.state.attachments || [], (attachment: Attachment) => {
+                  Column({ space: 2 }) {
+                    if (isImage(attachment.name)) {
+                      Image(fileUri.getUriFromPath(attachment.path)).width(80).height(64).objectFit(ImageFit.Contain)
+                        .onClick(() => { this.previewPath = attachment.path; })
+                    } else { Text(attachment.name).fontSize(10).width(80).height(64).maxLines(3) }
+                    Text('移除').fontSize(10).fontColor(BLUE).onClick(() => this.store?.removeAttachment(this.selected, attachment.id))
+                  }.padding(4).borderRadius(4).backgroundColor(Color.White)
+                }, (attachment: Attachment) => attachment.id)
+              }.padding({ left: 8, right: 8 })
+            }.scrollable(ScrollDirection.Horizontal).width('100%').height(98).margin({ top: 8 })
+          }
+          TextArea({ text: this.draft, placeholder: this.online() ? '写点什么…' : '离线也可留言，上线后自动发送' })
+            .minLines(1).maxLines(5).constraintSize({ minHeight: 38, maxHeight: 118 })
+            .padding({ left: 10, right: 10, top: 9, bottom: 9 }).fontSize(14).borderRadius(5).backgroundColor(Color.Transparent).width('100%')
+            .onChange((value: string) => { this.draft = value; })
+            .onFocus(() => { this.composerFocused = true; this.scrollToLatest(); })
+            .onBlur(() => { this.composerFocused = false; })
+        }.layoutWeight(1).borderRadius(5).backgroundColor('#F2F5F8')
         Button(this.selected === ASSISTANT_ID ? '保存' : '发送').type(ButtonType.Normal).borderRadius(5)
           .fontSize(13).backgroundColor(BLUE).fontColor(Color.White).height(38)
-          .enabled(this.online() && !this.submitting && (this.draft.trim().length > 0 || (this.state.attachments.length || 0) > 0))
+          .enabled(!this.submitting)
           .focusOnTouch(false)
           .onClick(() => this.send())
-      }.width('100%')
+      }.width('100%').alignItems(VerticalAlign.Bottom)
     }.width('100%').padding({ left: 12, right: 12, top: 4, bottom: 6 }).backgroundColor(Color.White)
   }
   @Builder

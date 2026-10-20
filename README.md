@@ -1,6 +1,6 @@
 # 邻聊 · HarmonyOS
 
-原生 ArkTS / ArkUI 手机客户端，与 `/Users/sunshine/SwiftProjects/local-chat` 的 macOS 邻聊互通。项目目录：`/Users/sunshine/DevEcoStudioProjects/LocalChat`。当前鸿蒙版本 **1.0.9**，包名保留为 `com.hohode.localchat`。
+原生 ArkTS / ArkUI 手机客户端，与 `/Users/sunshine/SwiftProjects/local-chat` 的 macOS 邻聊互通。项目目录：`/Users/sunshine/DevEcoStudioProjects/LocalChat`。当前鸿蒙版本 **1.0.15**，包名保留为 `com.hohode.localchat`。
 
 ## 已实现
 
@@ -25,10 +25,10 @@
 
 保留模板的目标/最低 SDK **6.1.1（API 24）**。这不是针对 HarmonyOS 4.x 的应用，也未宣称兼容比项目最低 SDK 更早的系统。如需兼容更早的 HarmonyOS NEXT，请先调整 SDK 并重新验证。
 
-HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；构建后会核验实际包内版本和图标引用，并复制交付包至 `distribution/邻聊-HarmonyOS-v1.0.9-unsigned.hap`。
+HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；构建后会核验实际包内版本和图标引用，并复制交付包至 `distribution/邻聊-HarmonyOS-v1.0.15-unsigned.hap`。
 
 图标分发素材为 `distribution/app_icon.png`（1024×1024 PNG），与 AppScope/entry 源资源一致；SDK 编译器在 HAP 中生成 512×512 运行时图标。
-现已使用用户配置的签名成功生成并安装调试包。签名包位于 `distribution/邻聊-HarmonyOS-v1.0.9-signed.hap`；该调试签名受配置的设备范围限制，不是公开分发包。
+使用用户配置的签名生成调试包，本次未安装到设备。签名包位于 `distribution/邻聊-HarmonyOS-v1.0.15-signed.hap`；该调试签名受配置的设备范围限制，不是公开分发包。
 
 ## 验证
 
@@ -77,3 +77,26 @@ HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；
 - 联系人显示未读条数，桌面角标显示总未读；前台查看对应会话后清零，后台接收保留未读，状态随历史保存。
 - 使用社交通知渠道，实际横幅、声音和角标受系统通知设置控制。客户端被暂停或退出后无法保证局域网消息及时到达，本功能不是云推送。
 - ArkTS 构建、包资源校验、Node 适配器未读回归与原始 Mac TCP 互通测试通过。设备未连接，系统通知展示、授权弹窗、角标和通知跳转待真机验证。
+
+## v1.0.10 离线留言
+
+- 离线时可提交文字、图片和文件，持久化到本机并显示“等待对方上线”；重启后继续补发。附件使用应用内副本。
+- 两端之后必须同时运行邻聊且网络可互通；本功能不依赖云端，也不会在发送设备关机后代为转发。
+- 删除待发消息可取消补发；重试沿用消息 ID，已收到的消息或文件重复确认，不重复保存。
+- 建议两端都升级，尤其是断线后文件重试；系统后台限制仍然适用。手机真机离线恢复与 UI 尚待验证。
+
+## v1.0.11 原始发送时间
+
+文字和文件携带首次发送时保存的毫秒时间戳，离线补发、重启和重试保留原时间；接收端显示原发送日期和时间。旧客户端未携带时间时回退到接收时间。显示使用各设备当地时区。
+
+## v1.0.12 附件单独发送
+
+发送按钮不依赖文字输入状态；点击时检查实际附件队列，支持只发图片或只发文件。完全空白时提示添加内容，不创建空消息。纯图片、纯文件及空提交已加入平台适配器测试；按钮真机交互仍待验证。
+
+## v1.0.13 消息时间格式
+
+消息时间统一显示为 `YYYY-MM-DD HH:mm:ss`，使用设备当地时区及 24 小时制，月、日、时、分、秒补齐两位。
+
+## v1.0.15 输入区附件预览
+
+待发送图片及文件移入输入框内部，位于文字上方，与文字共用输入区背景。多附件横向滚动，支持移除及图片放大；发送按钮与输入区底部对齐。

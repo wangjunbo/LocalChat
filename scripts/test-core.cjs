@@ -65,7 +65,7 @@ function load(file) {
   return module.exports;
 }
 const source = path.join(root, 'entry/src/main/ets');
-const { Packet, Framer, encodePacket } = load(`${source}/network/Wire.ets`);
+const { Packet, Framer, encodePacket, messageDate } = load(`${source}/network/Wire.ets`);
 const { Channel } = load(`${source}/network/LanNetwork.ets`);
 const { ChatStore } = load(`${source}/store/ChatStore.ets`);
 const { ASSISTANT_ID } = load(`${source}/model/Models.ets`);
@@ -122,8 +122,9 @@ async function core() {
   store.markRead(peer); assert.equal(badge, 0);
   console.log('PASS unread: dedup notification, foreground read, background unread, badge clearing');
   const data = crypto.randomBytes(140000);
-  const offer = Object.assign(new Packet('offer'), { name:'../../安全.bin', size:data.length });
+  const offer = Object.assign(new Packet('offer'), { name:'../../安全.bin', size:data.length, sentAt:1700000000123 });
   await store.process(offer, channel);
+  assert.equal(store.messages.find(m=>m.id===offer.id).date,1700000000123);
   for (let offset=0; offset<data.length; offset+=49152) {
     await store.process(Object.assign(new Packet('chunk', offer.id), {data:data.subarray(offset,offset+49152).toString('base64')}),channel);
   }
@@ -163,11 +164,75 @@ async function core() {
   assert.equal(store.incoming.size,0);
   console.log('PASS store: Phone handshake, type refresh, dedup/ack, binary+empty transfer, collision/path protection, overflow/incomplete cleanup, outgoing chunks, timeout, history, assistant, deletion');
 }
+async function attachmentOnly() {
+  for (const extension of ['png','bin']) {
+    const store=createStore(`attachment-only-${extension}`); const peer=crypto.randomUUID();
+    const {channel,sent}=recordingChannel(store);
+    await store.process(Object.assign(new Packet('hello'),{sender:peer,name:'Receiver'}),channel);
+    assert.equal(await store.submit(peer,'   '),false);
+    assert.equal(store.messages.length,0);
+    const source=path.join(temporary,`only.${extension}`);
+    const bytes=extension==='png' ? Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64') : crypto.randomBytes(8000);
+    fs.writeFileSync(source,bytes); await store.stageUri(peer,source);
+    assert.equal(await store.submit(peer,''),true);
+    assert.equal(store.attachments(peer).length,0);
+    assert.equal(sent.filter(p=>p.kind==='text').length,0);
+    const offer=sent.find(p=>p.kind==='offer'); assert(offer);
+    assert.equal(store.messages.length,1); assert.equal(store.messages[0].name,`only.${extension}`);
+    await store.process(new Packet('accept',offer.id),channel);
+    await wait(()=>sent.some(p=>p.kind==='end'&&p.id===offer.id),'attachment-only send');
+    assert.deepEqual(Buffer.concat(sent.filter(p=>p.kind==='chunk').map(p=>Buffer.from(p.data,'base64'))),bytes);
+    await store.process(new Packet('complete',offer.id),channel);
+    assert.equal(store.messages[0].status,'对方已接收');
+  }
+  console.log('PASS attachment-only: image and file without text, exact bytes, receipt, empty submission rejected');
+}
+async function offlineDelivery() {
+  const store = createStore('offline'); const peer = crypto.randomUUID();
+  store.peers.push({id:peer,name:'Offline',online:false});
+  assert.equal(await store.submit(peer,'重启后留言'),true);
+  const source = path.join(temporary,'offline.bin'); const bytes = crypto.randomBytes(120000);
+  fs.writeFileSync(source,bytes); await store.stageUri(peer,source);
+  assert.equal(await store.submit(peer,''),true); fs.unlinkSync(source);
+  const cancelled = await store.submit(peer,'取消留言'); assert(cancelled);
+  store.removeMessage(store.messages.at(-1));
+  const originalDate=1700000000123;
+  store.messages.forEach(m=>m.date=originalDate); store.persist();
+  const restored = createStore('offline');
+  assert.equal(restored.messages.length,2); assert(restored.messages.every(m=>m.pendingDelivery&&m.status==='等待对方上线'));
+  const {channel,sent} = recordingChannel(restored);
+  await restored.process(Object.assign(new Packet('hello'),{sender:peer,name:'Receiver'}),channel);
+  assert.equal(sent.filter(p=>p.kind==='text').length,1);
+  assert.equal(sent.filter(p=>p.kind==='offer').length,1);
+  assert(sent.filter(p=>p.kind==='text'||p.kind==='offer').every(p=>p.sentAt===originalDate));
+  const receivedText=Object.assign(new Packet('text'),{text:'原始时间',sentAt:originalDate});
+  await restored.process(receivedText,channel);
+  assert.equal(restored.messages.find(m=>m.id===receivedText.id).date,originalDate);
+  await restored.process(Object.assign(new Packet('text',receivedText.id),{text:'原始时间',sentAt:Date.now()}),channel);
+  assert.equal(restored.messages.find(m=>m.id===receivedText.id).date,originalDate);
+  for (const sentAt of [undefined,-1,Infinity,253402300800000,'invalid']) {
+    assert(Math.abs(messageDate({sentAt})-Date.now())<1000);
+  }
+  const text = restored.messages.find(m=>m.mine&&!m.name); const file = restored.messages.find(m=>m.name);
+  await restored.process(new Packet('ack',text.id),channel);
+  await restored.process(new Packet('accept',file.id),channel);
+  await wait(()=>sent.some(p=>p.kind==='end'&&p.id===file.id),'offline file end');
+  assert.deepEqual(Buffer.concat(sent.filter(p=>p.kind==='chunk').map(p=>Buffer.from(p.data,'base64'))),bytes);
+  await restored.process(new Packet('complete',file.id),channel);
+  const count=sent.length; await restored.flushOutbox(peer);
+  assert.equal(sent.length,count); assert(restored.messages.every(m=>!m.pendingDelivery));
+  // Lost completion: repeated offer for an already received file acknowledges it again.
+  const received = {id:'received-again',peer,mine:false,name:'a.bin',bytes:3,status:'已保存'};
+  restored.messages.push(received);
+  await restored.process(Object.assign(new Packet('offer',received.id),{name:'a.bin',size:3}),channel);
+  assert.equal(sent.at(-1).kind,'complete'); assert.equal(restored.messages.filter(m=>m.id===received.id).length,1);
+  console.log('PASS offline: durable text/file queue, restart, source removal, cancellation, reconnect, receipt deduplication');
+}
 async function interop() {
   const macRoot=process.env.LANCHAT_MAC_SOURCE || '/Users/sunshine/SwiftProjects/local-chat';
   if (!fs.existsSync(path.join(macRoot,'Sources/LanChat/ChatStore.swift'))) throw new Error('Set LANCHAT_MAC_SOURCE to Mac project for interoperability test');
   const harness=path.join(root,'scripts/MacInterop.swift'); const binary=path.join(temporary,'MacInterop');
-  const swiftSources=['Wire.swift','ChatStore.swift','AssistantArchive.swift','ChatHistory.swift'].map(f=>path.join(macRoot,'Sources/LanChat',f));
+  const swiftSources=['Wire.swift','ChatStore.swift','AssistantArchive.swift','ChatHistory.swift','BonjourFallback.swift'].map(f=>path.join(macRoot,'Sources/LanChat',f));
   execFileSync('swiftc',['-parse-as-library',...swiftSources,harness,'-o',binary],{stdio:'pipe'});
   const mac = spawn(binary,[path.join(temporary,'mac')],{stdio:['ignore','pipe','pipe']});
   let log='';let macError='';let exited=false;let macCode;
@@ -203,6 +268,6 @@ async function interop() {
   } finally { mac.kill(); }
 }
 (async()=>{
-  try { await core(); await interop(); }
+  try { await core(); await attachmentOnly(); await offlineDelivery(); await interop(); }
   finally { for(const store of stores) await store.stop(); fs.rmSync(temporary,{recursive:true,force:true}); }
 })().catch(error=>{console.error(error);process.exitCode=1;});

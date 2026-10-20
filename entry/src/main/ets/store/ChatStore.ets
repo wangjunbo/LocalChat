@@ -6,7 +6,7 @@ import { util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
-import { Packet, CHUNK_SIZE } from '../network/Wire';
+import { Packet, CHUNK_SIZE, messageDate } from '../network/Wire';
 import { Channel, LanNetwork } from '../network/LanNetwork';
 import { Peer, Message, Archive, Attachment, ASSISTANT_ID } from '../model/Models';
 
@@ -67,6 +67,7 @@ export class ChatStore {
   private runId: string = util.generateRandomUUID();
   private runs: Map<string, string> = new Map();
   private queued: Map<string, Attachment[]> = new Map();
+  private lastTextAttempt: Map<string, number> = new Map();
   private incoming: Map<string, Transfer> = new Map();
   private outgoing: Map<string, Transfer> = new Map();
   private archiveWritable: boolean = true;
@@ -205,39 +206,66 @@ export class ChatStore {
     } catch (error) { this.report(`另存失败：${(error as Error).message}`); }
   }
   async submit(peer: string, text: string): Promise<boolean> {
-    const channel = this.network.channelFor(peer);
-    if (peer !== ASSISTANT_ID && !channel) { this.report('对方已离线'); return false; }
+    if (!this.archiveWritable) { this.report('聊天记录不可写，无法保存待发消息'); return false; }
     const content = text.trim();
+    if (!content && this.attachments(peer).length === 0) { return false; }
     if (new util.TextEncoder().encodeInto(content).length > 32 * 1024) { this.report('文字过长，请分段发送'); return false; }
+    const added: Message[] = [];
     if (content) {
       const message = new Message();
       message.id = util.generateRandomUUID(); message.peer = peer; message.text = content; message.mine = true;
-      message.status = peer === ASSISTANT_ID ? '已保存到本机' : '发送中';
-      this.messages.push(message); this.changed();
-      if (channel) {
-        const packet = new Packet('text', message.id); packet.text = content;
-        try { await channel.send(packet); }
-        catch (_) { message.status = '发送失败'; this.changed(); return false; }
-      }
+      message.pendingDelivery = peer !== ASSISTANT_ID;
+      message.status = peer === ASSISTANT_ID ? '已保存到本机' : '等待对方上线';
+      added.push(message);
     }
     const files = this.attachments(peer).slice();
     for (const file of files) {
       const message = new Message();
       message.id = util.generateRandomUUID(); message.peer = peer; message.mine = true;
       message.name = file.name; message.path = file.path; message.bytes = file.size;
-      message.status = peer === ASSISTANT_ID ? '已保存到本机' : '等待对方接收';
-      this.messages.push(message);
-      if (channel) {
-        const transfer = new Transfer();
-        transfer.peer = peer; transfer.id = message.id; transfer.path = file.path;
-        transfer.total = file.size; transfer.channel = channel;
-        this.outgoing.set(`${peer}:${message.id}`, transfer);
-        const offer = new Packet('offer', message.id); offer.name = file.name; offer.size = file.size;
-        try { await channel.send(offer); } catch (_) { this.fail(`${peer}:${message.id}`, '发送失败'); }
-      }
-      this.removeAttachment(peer, file.id);
+      message.pendingDelivery = peer !== ASSISTANT_ID;
+      message.status = peer === ASSISTANT_ID ? '已保存到本机' : '等待对方上线';
+      added.push(message);
     }
-    this.changed(); return true;
+    this.messages = this.messages.concat(added);
+    if (!this.persist()) {
+      this.messages = this.messages.filter((item: Message) => !added.includes(item));
+      this.onChange(); return false;
+    }
+    for (const file of files) { this.removeAttachment(peer, file.id); }
+    this.changed();
+    await this.flushOutbox(peer);
+    return true;
+  }
+  private async flushOutbox(peer: string): Promise<void> {
+    const channel = this.network.channelFor(peer);
+    if (!channel) { return; }
+    for (const message of this.messages.filter((item: Message) => item.peer === peer && item.mine && item.pendingDelivery === true)) {
+      if (channel.closed) { return; }
+      if (!this.messages.includes(message) || !message.pendingDelivery) { continue; }
+      const key = `${peer}:${message.id}`;
+      if (!message.name) {
+        if (Date.now() - (this.lastTextAttempt.get(key) || 0) < 10000) { continue; }
+        this.lastTextAttempt.set(key, Date.now());
+        message.status = '发送中'; this.changed();
+        const packet = new Packet('text', message.id); packet.text = message.text; packet.sentAt = message.date;
+        try { await channel.send(packet); }
+        catch (_) { if (message.pendingDelivery) { message.status = '等待对方上线'; this.changed(); } }
+      } else {
+        if (Array.from(this.outgoing.values()).some((item: Transfer) => item.peer === peer)) { continue; }
+        if (!message.path || !fs.accessSync(message.path)) {
+          message.pendingDelivery = false; message.status = '待发文件不存在，请重新添加'; this.changed(); continue;
+        }
+        const transfer = new Transfer();
+        transfer.peer = peer; transfer.id = message.id; transfer.path = message.path;
+        transfer.total = message.bytes; transfer.channel = channel;
+        this.outgoing.set(key, transfer);
+        message.status = '等待对方接收'; message.transferred = 0; this.changed();
+        const offer = new Packet('offer', message.id); offer.name = message.name; offer.size = message.bytes; offer.sentAt = message.date;
+        try { await channel.send(offer); }
+        catch (_) { this.outgoing.delete(key); if (message.pendingDelivery) { message.status = '等待对方上线'; this.changed(); } }
+      }
+    }
   }
   private hello(): Packet {
     const packet = new Packet('hello');
@@ -268,7 +296,7 @@ export class ChatStore {
         if (this.noticeTimer !== -1) { clearTimeout(this.noticeTimer); }
         this.noticeTimer = setTimeout(() => { this.notice = ''; this.changed(false); }, 8000);
       }
-      this.changed(); return;
+      this.changed(); await this.flushOutbox(id); return;
     }
     if (!channel.peer) { throw new Error('未握手'); }
     const peer = channel.peer;
@@ -280,21 +308,31 @@ export class ChatStore {
       case 'text': {
         if (typeof packet.text !== 'string' || new util.TextEncoder().encodeInto(packet.text).length > 32 * 1024) { throw new Error('无效文字'); }
         if (!message) {
-          const received = new Message(); received.id = packet.id; received.peer = peer; received.text = packet.text;
+          const received = new Message(); received.id = packet.id; received.peer = peer; received.text = packet.text; received.date = messageDate(packet);
           received.unread = !(this.foreground && this.activePeer === peer);
           this.messages.push(received); this.changed(); this.onIncoming(received);
         }
+        if (!this.persist()) { throw new Error('无法保存收到的消息'); }
         await channel.send(new Packet('ack', packet.id)); break;
       }
-      case 'ack': if (message?.mine && !message.name) { message.status = '已送达'; this.changed(); } break;
+      case 'ack': if (message?.mine && !message.name) { message.status = '已送达'; message.pendingDelivery = false; this.changed(); } break;
       case 'offer': {
-        if (message || this.incoming.has(key)) { break; }
+        if (this.incoming.has(key)) { break; }
+        if (message) {
+          if (message.mine) { break; }
+          if (message.status === '已保存') {
+            if (!this.persist()) { throw new Error('无法保存接收记录'); }
+            await channel.send(new Packet('complete', packet.id)); break;
+          }
+          if (message.bytes !== packet.size) { break; }
+          this.messages = this.messages.filter((item: Message) => item !== message);
+        }
         if (typeof packet.size !== 'number' || !Number.isSafeInteger(packet.size) || packet.size < 0 || this.incoming.size >= 20) {
           const reject = new Packet('reject', packet.id); reject.text = '文件大小无效或并发文件过多'; await channel.send(reject); break;
         }
         const received = new Message(); received.id = packet.id; received.peer = peer;
         received.name = this.safeName(typeof packet.name === 'string' ? packet.name : '文件');
-        received.bytes = packet.size; received.status = '接收中';
+        received.bytes = packet.size; received.status = '接收中'; received.date = message?.date ?? messageDate(packet);
         received.unread = !(this.foreground && this.activePeer === peer);
         this.messages.push(received); this.onIncoming(received);
         const transfer = new Transfer(); transfer.peer = peer; transfer.id = packet.id; transfer.total = packet.size;
@@ -348,7 +386,9 @@ export class ChatStore {
           const target = `${transfer.path.substring(0, transfer.path.lastIndexOf('/'))}/${message.name}`;
           fs.renameSync(transfer.path, target);
           this.incoming.delete(key); message.path = target; message.status = '已保存'; message.transferred = message.bytes;
-          this.changed(); await channel.send(new Packet('complete', packet.id));
+          this.changed();
+          if (!this.persist()) { throw new Error('无法保存接收记录'); }
+          await channel.send(new Packet('complete', packet.id));
         } catch (_) { this.fail(key, '保存文件失败'); }
         break;
       }
@@ -362,8 +402,8 @@ export class ChatStore {
       }
       case 'complete': {
         const transfer = this.outgoing.get(key);
-        if (transfer && transfer.count === transfer.total && transfer.started && message) {
-          this.outgoing.delete(key); message.status = '对方已接收'; message.transferred = message.bytes; this.changed();
+        if (transfer && message && (message.pendingDelivery || (transfer.count === transfer.total && transfer.started))) {
+          this.outgoing.delete(key); message.pendingDelivery = false; message.status = '对方已接收'; message.transferred = message.bytes; this.changed();
         }
         break;
       }
@@ -401,7 +441,10 @@ export class ChatStore {
     if (incoming) { try { fs.unlinkSync(transfer.path); } catch (_) {} }
     this.incoming.delete(key); this.outgoing.delete(key);
     const message = this.messages.find((item: Message) => item.peer === transfer.peer && item.id === transfer.id);
-    if (message) { message.status = reason; }
+    if (message) {
+      const retry = message.mine && message.pendingDelivery === true && reason === '连接断开，请重试';
+      message.pendingDelivery = retry; message.status = retry ? '等待对方上线' : reason;
+    }
     if (notify && transfer.channel && !transfer.channel.closed) {
       const packet = new Packet('reject', transfer.id); packet.text = reason;
       transfer.channel.send(packet).catch(() => {});
@@ -414,12 +457,14 @@ export class ChatStore {
     if (channel.peer && !this.network.channelFor(channel.peer)) {
       const peer = this.peers.find((item: Peer) => item.id === channel.peer);
       if (peer) { peer.online = false; }
-      this.messages.forEach((item: Message) => { if (item.peer === channel.peer && item.status === '发送中' && !item.name) { item.status = '送达状态未知'; } });
+      this.lastTextAttempt.clear();
+      this.messages.forEach((item: Message) => { if (item.peer === channel.peer && item.mine && item.pendingDelivery) { item.status = '等待对方上线'; } });
     }
     this.changed();
   }
   private checkTransfers(): void {
     const now = Date.now();
+    this.peers.forEach((peer: Peer) => { if (peer.online) { this.flushOutbox(peer.id).catch(() => {}); } });
     this.incoming.forEach((transfer: Transfer, key: string) => { if (now - transfer.lastProgress > 120000) { this.fail(key, '传输超时，请重试'); } });
     this.outgoing.forEach((transfer: Transfer, key: string) => { if (now - transfer.lastProgress > 120000) { this.fail(key, '传输超时，请重试'); } });
   }
@@ -445,19 +490,21 @@ export class ChatStore {
       this.peers.forEach((peer: Peer) => { peer.online = false; });
       const pending = ['发送中', '接收中', '等待对方接收', '等待传输结束', '等待接收确认'];
       this.messages.forEach((message: Message) => {
-        if (pending.includes(message.status)) { message.status = message.name ? '传输已中断，请重试' : '送达状态未知'; }
+        if (message.mine && message.pendingDelivery === true) { message.status = '等待对方上线'; }
+        else if (pending.includes(message.status)) { message.status = message.name ? '传输已中断，请重试' : '送达状态未知'; }
       });
     } catch (_) { this.archiveWritable = false; this.error = '历史记录读取失败，已保留原文件，本次记录暂不覆盖保存。'; }
   }
-  private persist(): void {
+  private persist(): boolean {
     if (this.persistTimer !== -1) { clearTimeout(this.persistTimer); this.persistTimer = -1; }
-    if (!this.archiveWritable) { return; }
+    if (!this.archiveWritable) { return false; }
     try {
       const archive = new Archive(); archive.peers = this.peers; archive.messages = this.messages;
       const temporary = `${this.root}/history.tmp`;
       const file = fs.openSync(temporary, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
       try { fs.writeSync(file.fd, JSON.stringify(archive)); } finally { fs.closeSync(file); }
       fs.renameSync(temporary, `${this.root}/history.json`);
-    } catch (_) { this.error = '聊天记录保存失败，请检查存储空间'; this.onChange(); }
+      return true;
+    } catch (_) { this.error = '聊天记录保存失败，请检查存储空间'; this.onChange(); return false; }
   }
 }

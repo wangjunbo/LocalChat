@@ -1,4 +1,4 @@
-export const APP_VERSION: string = '1.0.9';
+export const APP_VERSION: string = '1.0.15';
 export const ASSISTANT_ID: string = 'local-assistant';
 export class Peer {
   id: string = '';
@@ -7,6 +7,7 @@ export class Peer {
   deviceType: string = '';
 }
 export class Message {
+  pendingDelivery: boolean = false;
   unread: boolean = false;
   id: string = '';
   peer: string = '';
@@ -37,4 +38,16 @@ export function sizeLabel(bytes: number): string {
   if (bytes < 1048576) { return `${(bytes / 1024).toFixed(1)} KB`; }
   if (bytes < 1073741824) { return `${(bytes / 1048576).toFixed(1)} MB`; }
   return `${(bytes / 1073741824).toFixed(2)} GB`;
+}
+
+export function formatMessageDate(timestamp: number): string {
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) { return ''; }
+  const year = date.getFullYear().toString().padStart(4, '0');
+  const month = (date.getMonth() + 1).toString().padStart(2, '0');
+  const day = date.getDate().toString().padStart(2, '0');
+  const hour = date.getHours().toString().padStart(2, '0');
+  const minute = date.getMinutes().toString().padStart(2, '0');
+  const second = date.getSeconds().toString().padStart(2, '0');
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
 }

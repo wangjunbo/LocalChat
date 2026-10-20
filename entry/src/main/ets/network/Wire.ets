@@ -15,6 +15,8 @@ export class Packet {
   runID?: string;
   supportsProgress?: boolean;
   deviceType?: string;
+  // Original send time in Unix epoch milliseconds.
+  sentAt?: number;
   constructor(kind: string = '', id?: string) {
     this.kind = kind;
     if (id !== undefined) { this.id = id; }
@@ -51,4 +53,9 @@ export class Framer {
     this.pending = merged.slice(offset);
     return packets;
   }
+}
+
+export function messageDate(packet: Packet): number {
+  const sentAt = packet.sentAt;
+  return typeof sentAt === 'number' && Number.isFinite(sentAt) && sentAt >= 0 && sentAt <= 253402300799999 ? sentAt : Date.now();
 }
