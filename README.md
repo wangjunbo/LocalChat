@@ -1,6 +1,6 @@
 # 邻聊 · HarmonyOS
 
-原生 ArkTS / ArkUI 手机客户端，与 `/Users/sunshine/SwiftProjects/local-chat` 的 macOS 邻聊互通。项目目录：`/Users/sunshine/DevEcoStudioProjects/LocalChat`。当前鸿蒙版本 **1.0.8**，包名保留为 `com.hohode.localchat`。
+原生 ArkTS / ArkUI 手机客户端，与 `/Users/sunshine/SwiftProjects/local-chat` 的 macOS 邻聊互通。项目目录：`/Users/sunshine/DevEcoStudioProjects/LocalChat`。当前鸿蒙版本 **1.0.9**，包名保留为 `com.hohode.localchat`。
 
 ## 已实现
 
@@ -25,10 +25,10 @@
 
 保留模板的目标/最低 SDK **6.1.1（API 24）**。这不是针对 HarmonyOS 4.x 的应用，也未宣称兼容比项目最低 SDK 更早的系统。如需兼容更早的 HarmonyOS NEXT，请先调整 SDK 并重新验证。
 
-HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；构建后会核验实际包内版本和图标引用，并复制交付包至 `distribution/邻聊-HarmonyOS-v1.0.8-unsigned.hap`。
+HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；构建后会核验实际包内版本和图标引用，并复制交付包至 `distribution/邻聊-HarmonyOS-v1.0.9-unsigned.hap`。
 
 图标分发素材为 `distribution/app_icon.png`（1024×1024 PNG），与 AppScope/entry 源资源一致；SDK 编译器在 HAP 中生成 512×512 运行时图标。
-现已使用用户配置的签名成功生成并安装调试包。签名包位于 `distribution/邻聊-HarmonyOS-v1.0.8-signed.hap`；该调试签名受配置的设备范围限制，不是公开分发包。
+现已使用用户配置的签名成功生成并安装调试包。签名包位于 `distribution/邻聊-HarmonyOS-v1.0.9-signed.hap`；该调试签名受配置的设备范围限制，不是公开分发包。
 
 ## 验证
 
@@ -70,3 +70,10 @@ HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；
 - 桌面启用同源双气泡分层图标，启动页和首页使用合成图。
 - v1.0.8 构建、资源校验及设备安装成功；桌面裁切效果与动画观感尚未完成真机确认。
 - 核心与原始 Mac TCP 互通测试于 v1.0.7 通过，v1.0.8 仅调整图标资源与打包校验。
+
+## v1.0.9 消息提醒
+
+- 每条新文字或文件发送本地系统通知，点击通知进入对应会话。首次打开申请通知授权。
+- 联系人显示未读条数，桌面角标显示总未读；前台查看对应会话后清零，后台接收保留未读，状态随历史保存。
+- 使用社交通知渠道，实际横幅、声音和角标受系统通知设置控制。客户端被暂停或退出后无法保证局域网消息及时到达，本功能不是云推送。
+- ArkTS 构建、包资源校验、Node 适配器未读回归与原始 Mac TCP 互通测试通过。设备未连接，系统通知展示、授权弹窗、角标和通知跳转待真机验证。

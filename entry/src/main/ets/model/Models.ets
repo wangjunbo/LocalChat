@@ -1,4 +1,4 @@
-export const APP_VERSION: string = '1.0.8';
+export const APP_VERSION: string = '1.0.9';
 export const ASSISTANT_ID: string = 'local-assistant';
 export class Peer {
   id: string = '';
@@ -7,6 +7,7 @@ export class Peer {
   deviceType: string = '';
 }
 export class Message {
+  unread: boolean = false;
   id: string = '';
   peer: string = '';
   text: string = '';

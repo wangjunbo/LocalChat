@@ -38,6 +38,28 @@ export class ChatStore {
   notice: string = '';
   error: string = '';
   onChange: () => void = () => {};
+  onIncoming: (message: Message) => void = () => {};
+  onUnreadChange: (count: number) => void = () => {};
+  activePeer: string = '';
+  foreground: boolean = false;
+  requestedPeer: string = '';
+  unreadCount(peer: string = ''): number {
+    return this.messages.filter((item: Message) => !item.mine && item.unread === true && (!peer || item.peer === peer)).length;
+  }
+  markRead(peer: string): void {
+    if (!peer || this.unreadCount(peer) === 0) { return; }
+    this.messages.forEach((item: Message) => { if (item.peer === peer) { item.unread = false; } });
+    this.changed();
+  }
+  setForeground(value: boolean): void {
+    this.foreground = value;
+    if (value) { this.markRead(this.activePeer); }
+  }
+  openFromNotification(peer: string): void {
+    if (!this.peers.some((item: Peer) => item.id === peer)) { return; }
+    this.requestedPeer = peer;
+    this.onChange();
+  }
   private prefs: preferences.Preferences;
   private network: LanNetwork;
   private root: string;
@@ -259,7 +281,8 @@ export class ChatStore {
         if (typeof packet.text !== 'string' || new util.TextEncoder().encodeInto(packet.text).length > 32 * 1024) { throw new Error('无效文字'); }
         if (!message) {
           const received = new Message(); received.id = packet.id; received.peer = peer; received.text = packet.text;
-          this.messages.push(received); this.changed();
+          received.unread = !(this.foreground && this.activePeer === peer);
+          this.messages.push(received); this.changed(); this.onIncoming(received);
         }
         await channel.send(new Packet('ack', packet.id)); break;
       }
@@ -271,7 +294,9 @@ export class ChatStore {
         }
         const received = new Message(); received.id = packet.id; received.peer = peer;
         received.name = this.safeName(typeof packet.name === 'string' ? packet.name : '文件');
-        received.bytes = packet.size; received.status = '接收中'; this.messages.push(received);
+        received.bytes = packet.size; received.status = '接收中';
+        received.unread = !(this.foreground && this.activePeer === peer);
+        this.messages.push(received); this.onIncoming(received);
         const transfer = new Transfer(); transfer.peer = peer; transfer.id = packet.id; transfer.total = packet.size;
         transfer.channel = channel;
         const directory = `${this.root}/files/${util.generateRandomUUID()}`;
@@ -404,7 +429,7 @@ export class ChatStore {
     return !clean || clean.startsWith('.') ? `文件${clean.replace(/^\.+/, '')}` : clean;
   }
   private changed(persist: boolean = true): void {
-    if (persist) { this.onChange(); }
+    if (persist) { this.onUnreadChange(this.unreadCount()); this.onChange(); }
     else if (this.updateTimer === -1) {
       this.updateTimer = setTimeout(() => { this.updateTimer = -1; this.onChange(); }, 80);
     }

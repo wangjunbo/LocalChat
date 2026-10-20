@@ -1,3 +1,4 @@
+import { MessageNotifications } from '../notifications/MessageNotifications';
 import { ChatStore } from '../store/ChatStore';
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -6,7 +7,11 @@ import { window } from '@kit.ArkUI';
 const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
+  private notifications?: MessageNotifications;
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    const store = ChatStore.shared(this.context);
+    this.notifications = new MessageNotifications(this.context, store);
+    this.handleWant(want);
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
     } catch (err) {
@@ -15,6 +20,11 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
   }
 
+  private handleWant(want: Want): void {
+    const peer = want.parameters?.chatPeer;
+    if (typeof peer === 'string') { ChatStore.shared(this.context).openFromNotification(peer); }
+  }
+  onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void { this.handleWant(want); }
   onDestroy(): void {
     ChatStore.shared(this.context).stop();
   }
@@ -28,6 +38,7 @@ export default class EntryAbility extends UIAbility {
         hilog.error(DOMAIN, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));
         return;
       }
+      this.notifications?.enable();
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
     });
   }
@@ -38,12 +49,14 @@ export default class EntryAbility extends UIAbility {
   }
 
   onForeground(): void {
+    ChatStore.shared(this.context).setForeground(true);
     // Ability has brought to foreground
     ChatStore.shared(this.context).start();
     ChatStore.shared(this.context).refresh();
   }
 
   onBackground(): void {
+    ChatStore.shared(this.context).setForeground(false);
     // Ability has back to background
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
   }

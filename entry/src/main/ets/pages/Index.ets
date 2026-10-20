@@ -69,6 +69,14 @@ struct Index {
   }
   private updateState(): void {
     if (!this.store) { return; }
+    if (this.store.requestedPeer) {
+      this.selected = this.store.requestedPeer;
+      this.store.requestedPeer = '';
+      this.store.activePeer = this.selected;
+      this.draft = ''; this.historyQuery = '';
+      this.store.markRead(this.selected);
+      this.scrollToLatest();
+    }
     const previousCount = this.state.messages.filter((item: Message) => item.peer === this.selected).length;
     const state = new ViewState();
     state.peers = JSON.parse(JSON.stringify(this.store.peers)) as Peer[];
@@ -99,6 +107,7 @@ struct Index {
     if (this.opening) { this.backAfterOpening = true; return; }
     if (this.returning || !this.selected) { return; }
     this.scrollGeneration++;
+    if (this.store) { this.store.activePeer = ''; }
     this.composerFocused = false;
     this.getUIContext().getFocusController().clearFocus();
     this.getUIContext().animateTo({
@@ -120,6 +129,7 @@ struct Index {
     this.opening = true;
     this.backAfterOpening = false;
     this.selected = id;
+    if (this.store) { this.store.activePeer = id; this.store.markRead(id); }
     this.draft = '';
     this.historyQuery = '';
     this.updateState();
@@ -268,11 +278,16 @@ struct Index {
                 }.width('100%')
                 Text(this.preview(peer.id)).fontSize(12).fontColor(MUTED).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              if (this.state.messages.filter((item: Message) => item.peer === peer.id && item.unread === true && !item.mine).length > 0) {
+                Text(`${this.state.messages.filter((item: Message) => item.peer === peer.id && item.unread === true && !item.mine).length}`)
+                  .fontSize(11).fontColor(Color.White).backgroundColor('#D94343').borderRadius(10)
+                  .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+              }
               Circle().width(7).height(7).fill(peer.online ? '#4F9B45' : '#A4ACB4')
             }.padding(14).width('100%').backgroundColor(Color.White).borderRadius(6)
           }.onClick(() => this.selectPeer(peer.id))
             .gesture(LongPressGesture().onAction(() => { if (!peer.online) { this.store?.removePeer(peer); } }))
-        }, (peer: Peer) => `${peer.id}-${peer.name}-${peer.online}-${peer.deviceType}-${this.preview(peer.id)}`)
+        }, (peer: Peer) => `${peer.id}-${peer.name}-${peer.online}-${peer.deviceType}-${this.preview(peer.id)}-${this.store?.unreadCount(peer.id)}`)
         if ((this.state.peers.length || 0) === 0) {
           ListItem() {
             Column({ space: 12 }) {
