@@ -1,4 +1,4 @@
-import { FrameCallback, KeyboardAvoidMode } from '@kit.ArkUI';
+import { FrameCallback, KeyboardAvoidMode, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { fileUri } from '@kit.CoreFileKit';
@@ -31,6 +31,10 @@ const MUTED: string = '#697D90';
 @Entry
 @Component
 struct Index {
+  @StorageLink('systemTopPx') private systemTopPx: number = 0;
+  @StorageLink('systemBottomPx') private systemBottomPx: number = 0;
+  @StorageLink('systemLeftPx') private systemLeftPx: number = 0;
+  @StorageLink('systemRightPx') private systemRightPx: number = 0;
   @State private state: ViewState = new ViewState();
   @State private selected: string = '';
   @State private returning: boolean = false;
@@ -42,7 +46,7 @@ struct Index {
   @State private draft: string = '';
   @State private settings: boolean = false;
   @State private editingName: string = '';
-  @State private previewPath: string = '';
+  @State @Watch('updateSystemBarContent') private previewPath: string = '';
   @State private submitting: boolean = false;
   private composerFocused: boolean = false;
   private followLatest: boolean = true;
@@ -66,6 +70,15 @@ struct Index {
     if (this.settings) { this.settings = false; return true; }
     if (this.selected) { this.goBack(); return true; }
     return false;
+  }
+  private updateSystemBarContent(): void {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    window.getLastWindow(context).then((mainWindow: window.Window) => {
+      const color = this.previewPath ? '#FFFFFF' : INK;
+      return mainWindow.setWindowSystemBarProperties({
+        statusBarContentColor: color, navigationBarContentColor: color
+      });
+    }).catch(() => {});
   }
   private updateState(): void {
     if (!this.store) { return; }
@@ -187,7 +200,11 @@ struct Index {
   }
 
   build() {
-    Stack() {
+    Column({ space: 0 }) {
+      // Paint the system regions explicitly; only the middle Stack contains controls.
+      Row().width('100%').height(this.getUIContext().px2vp(this.systemTopPx))
+        .backgroundColor(this.previewPath ? '#14202B' : '#DAEBF9')
+      Stack() {
       Column({ space: 0 }) {
         this.homeHeader()
         this.statusBanners()
@@ -216,9 +233,14 @@ struct Index {
             Blank()
           }.width('100%').padding(16)
           Image(fileUri.getUriFromPath(this.previewPath)).objectFit(ImageFit.Contain).width('100%').layoutWeight(1)
-        }.width('100%').height('100%').backgroundColor('#EE14202B')
+        }.width('100%').height('100%').backgroundColor('#14202B')
       }
-    }.width('100%').height('100%').clip(true)
+      }.width('100%').layoutWeight(1).clip(true)
+        .padding({ left: this.getUIContext().px2vp(this.systemLeftPx),
+          right: this.getUIContext().px2vp(this.systemRightPx) })
+      Row().width('100%').height(this.getUIContext().px2vp(this.systemBottomPx))
+        .backgroundColor(this.previewPath ? '#14202B' : (this.selected ? '#FFFFFF' : '#F4F7FA'))
+    }.width('100%').height('100%').backgroundColor(this.previewPath ? '#14202B' : '#F4F7FA')
   }
   @Builder
   private statusBanners() {
