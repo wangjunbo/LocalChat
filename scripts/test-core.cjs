@@ -174,7 +174,14 @@ async function attachmentOnly() {
     const source=path.join(temporary,`only.${extension}`);
     const bytes=extension==='png' ? Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64') : crypto.randomBytes(8000);
     fs.writeFileSync(source,bytes); await store.stageUri(peer,source);
-    assert.equal(await store.submit(peer,''),true);
+    // Attachment-only submission must not depend on native empty-string encoding.
+    const encodeInto = util.TextEncoder.prototype.encodeInto;
+    util.TextEncoder.prototype.encodeInto = function (text) {
+      assert.notEqual(text, '', 'attachment-only send must skip text encoding');
+      return encodeInto.call(this, text);
+    };
+    try { assert.equal(await store.submit(peer,''),true); }
+    finally { util.TextEncoder.prototype.encodeInto = encodeInto; }
     assert.equal(store.attachments(peer).length,0);
     assert.equal(sent.filter(p=>p.kind==='text').length,0);
     const offer=sent.find(p=>p.kind==='offer'); assert(offer);

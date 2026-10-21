@@ -186,6 +186,8 @@ struct Index {
     this.store.submit(peer, text).then((sent: boolean) => {
       if (sent && this.selected === peer && this.draft === text) { this.draft = ''; }
       if (sent && this.selected === peer) { this.followLatest = true; this.scrollToLatest(); }
+    }).catch(() => {
+      this.getUIContext().getPromptAction().showToast({ message: '发送失败，请重试' });
     }).finally(() => { this.submitting = false; });
   }
   private copy(message: Message): void {
@@ -449,7 +451,8 @@ struct Index {
                   }.padding(4).borderRadius(4).backgroundColor(Color.White)
                 }, (attachment: Attachment) => attachment.id)
               }.padding({ left: 8, right: 8 })
-            }.scrollable(ScrollDirection.Horizontal).width('100%').height(98).margin({ top: 8 })
+            }.scrollable(ScrollDirection.Horizontal).align(Alignment.Start)
+              .width('100%').height(98).margin({ top: 8 })
           }
           TextArea({ text: this.draft, placeholder: this.online() ? '写点什么…' : '离线也可留言，上线后自动发送' })
             .minLines(1).maxLines(5).constraintSize({ minHeight: 38, maxHeight: 118 })

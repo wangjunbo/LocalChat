@@ -209,7 +209,7 @@ export class ChatStore {
     if (!this.archiveWritable) { this.report('聊天记录不可写，无法保存待发消息'); return false; }
     const content = text.trim();
     if (!content && this.attachments(peer).length === 0) { return false; }
-    if (new util.TextEncoder().encodeInto(content).length > 32 * 1024) { this.report('文字过长，请分段发送'); return false; }
+    if (content && new util.TextEncoder().encodeInto(content).length > 32 * 1024) { this.report('文字过长，请分段发送'); return false; }
     const added: Message[] = [];
     if (content) {
       const message = new Message();
