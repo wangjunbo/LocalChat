@@ -1,5 +1,6 @@
+import { systemShare } from '@kit.ShareKit';
 import { common } from '@kit.AbilityKit';
-import { preferences } from '@kit.ArkData';
+import { preferences, uniformTypeDescriptor } from '@kit.ArkData';
 import { fileIo as fs, picker, fileUri } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { util } from '@kit.ArkTS';
@@ -167,8 +168,8 @@ export class ChatStore {
         const bytes = await packer.packing(pixels, { format: 'image/png', quality: 100 });
         const attachment = new Attachment(); attachment.id = util.generateRandomUUID();
         attachment.name = `图片-${Date.now()}.png`; attachment.size = bytes.byteLength;
-        const directory = `${this.root}/files/${attachment.id}`; fs.mkdirSync(directory);
-        attachment.path = `${directory}/${attachment.name}`;
+        attachment.path = this.availableFilePath(attachment.name);
+        attachment.name = attachment.path.substring(attachment.path.lastIndexOf('/') + 1);
         const file = fs.openSync(attachment.path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
         try { fs.writeSync(file.fd, bytes); } finally { fs.closeSync(file); }
         this.queued.set(peer, this.attachments(peer).concat([attachment])); this.changed(false);
@@ -184,16 +185,17 @@ export class ChatStore {
       const file = new Attachment();
       file.id = util.generateRandomUUID();
       file.name = this.safeName(new fileUri.FileUri(uri).name || '文件');
-      const directory = `${this.root}/files/${file.id}`;
-      fs.mkdirSync(directory);
-      file.path = `${directory}/${file.name}`;
+      file.path = this.availableFilePath(file.name);
+      file.name = file.path.substring(file.path.lastIndexOf('/') + 1);
       file.size = stat.size;
       await fs.copyFile(source.fd, file.path);
       this.queued.set(peer, this.attachments(peer).concat([file]));
       this.changed(false);
     } finally { fs.closeSync(source); }
   }
-  async exportFile(message: Message): Promise<void> {
+  async exportFile(selected: Message): Promise<void> {
+    const message = this.messages.find((item: Message) => item.id === selected.id && item.peer === selected.peer);
+    if (!message) { return; }
     if (!message.path) { return; }
     try {
       const documentPicker = new picker.DocumentViewPicker(this.context);
@@ -202,8 +204,73 @@ export class ChatStore {
       const file = fs.openSync(targets[0], fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE);
       try { await fs.copyFile(message.path, file.fd); }
       finally { fs.closeSync(file); }
-      this.notice = '已另存到所选位置'; this.changed(false);
-    } catch (error) { this.report(`另存失败：${(error as Error).message}`); }
+      // Cross-provider moves require completing the copy before removing the sandbox source.
+      fs.unlinkSync(message.path);
+      message.savedUri = targets[0];
+      message.path = '';
+      message.status = '已移至所选目录';
+      this.notice = '已移动到所选位置';
+      if (!this.persist()) { this.report('文件已移动，但聊天记录保存失败'); return; }
+      this.changed();
+    } catch (error) { this.report(`移动失败：${(error as Error).message}`); }
+  }
+  async saveToDownload(message: Message): Promise<void> {
+    await this.exportFile(message);
+  }
+  async openSavedDirectory(message: Message): Promise<void> {
+    if (!message.savedUri) { this.report('未记录保存位置，请在文件管理器中查找'); return; }
+    try {
+      const directory = message.savedUri.substring(0, message.savedUri.lastIndexOf('/'));
+      const documentPicker = new picker.DocumentViewPicker(this.context);
+      await documentPicker.select({ defaultFilePathUri: directory,
+        selectMode: picker.DocumentSelectMode.FOLDER });
+    } catch (error) { this.report(`打开目录失败：${(error as Error).message}`); }
+  }
+  async shareFile(message: Message): Promise<void> {
+    if (!message.path) { return; }
+    try {
+      const uri = fileUri.getUriFromPath(message.path);
+      const extension = message.name.substring(message.name.lastIndexOf('.'));
+      const utd = uniformTypeDescriptor.getUniformDataTypeByFilenameExtension(extension) || 'general.file';
+      const data = new systemShare.SharedData({ utd: utd, uri: uri });
+      const controller = new systemShare.ShareController(data);
+      await controller.show(this.context, { previewMode: systemShare.SharePreviewMode.DEFAULT });
+    } catch (error) { this.report(`分享失败：${(error as Error).message}`); }
+  }
+  async renameFile(selected: Message, newName: string): Promise<void> {
+    const message = this.messages.find((item: Message) => item.id === selected.id && item.peer === selected.peer);
+    if (!message) { this.report('消息已不存在'); return; }
+    newName = newName.trim();
+    if (!message.path || !newName) { return; }
+    try {
+      if (newName === message.name) { return; }
+      if (newName === '.' || newName === '..' || /[\\/\x00-\x1f]/.test(newName)) {
+        this.report('文件名不能包含路径分隔符或控制字符'); return;
+      }
+      const directory = message.path.substring(0, message.path.lastIndexOf('/'));
+      const newPath = `${directory}/${newName}`;
+      if (fs.accessSync(newPath)) { this.report('文件名已存在'); return; }
+      fs.renameSync(message.path, newPath);
+      message.path = newPath;
+      message.name = newName;
+      if (!this.persist()) { this.report('无法保存重命名记录'); return; }
+      this.notice = '重命名成功'; this.changed();
+    } catch (error) { this.report(`重命名失败：${(error as Error).message}`); }
+  }
+  deleteMessage(message: Message): void {
+    const index = this.messages.findIndex((item: Message) => item.id === message.id && item.peer === message.peer);
+    if (index < 0) { return; }
+    const stored = this.messages[index];
+    if (stored.path) {
+      try {
+        if (fs.accessSync(stored.path)) { fs.unlinkSync(stored.path); }
+      } catch (error) {
+        this.report(`删除文件失败：${(error as Error).message}`); return;
+      }
+    }
+    this.messages.splice(index, 1);
+    if (!this.persist()) { this.report('无法保存删除记录'); return; }
+    this.notice = '已删除'; this.changed();
   }
   async submit(peer: string, text: string): Promise<boolean> {
     if (!this.archiveWritable) { this.report('聊天记录不可写，无法保存待发消息'); return false; }
@@ -337,10 +404,8 @@ export class ChatStore {
         this.messages.push(received); this.onIncoming(received);
         const transfer = new Transfer(); transfer.peer = peer; transfer.id = packet.id; transfer.total = packet.size;
         transfer.channel = channel;
-        const directory = `${this.root}/files/${util.generateRandomUUID()}`;
         try {
-          fs.mkdirSync(directory);
-          transfer.path = `${directory}/.receiving.part`;
+          transfer.path = `${this.root}/files/.${util.generateRandomUUID()}.receiving.part`;
           transfer.file = fs.openSync(transfer.path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
           this.incoming.set(key, transfer);
           await channel.send(new Packet('accept', packet.id));
@@ -383,7 +448,8 @@ export class ChatStore {
         if (transfer.count !== transfer.total) { this.fail(key, '文件不完整'); break; }
         try {
           fs.closeSync(transfer.file); transfer.file = undefined;
-          const target = `${transfer.path.substring(0, transfer.path.lastIndexOf('/'))}/${message.name}`;
+          const target = this.availableFilePath(message.name);
+          message.name = target.substring(target.lastIndexOf('/') + 1);
           fs.renameSync(transfer.path, target);
           this.incoming.delete(key); message.path = target; message.status = '已保存'; message.transferred = message.bytes;
           this.changed();
@@ -468,6 +534,35 @@ export class ChatStore {
     this.incoming.forEach((transfer: Transfer, key: string) => { if (now - transfer.lastProgress > 120000) { this.fail(key, '传输超时，请重试'); } });
     this.outgoing.forEach((transfer: Transfer, key: string) => { if (now - transfer.lastProgress > 120000) { this.fail(key, '传输超时，请重试'); } });
   }
+  private availableFilePath(name: string): string {
+    const clean = this.safeName(name);
+    const dot = clean.lastIndexOf('.');
+    const base = dot > 0 ? clean.substring(0, dot) : clean;
+    const extension = dot > 0 ? clean.substring(dot) : '';
+    let target = `${this.root}/files/${clean}`;
+    let suffix = 1;
+    while (fs.accessSync(target)) { target = `${this.root}/files/${base}(${suffix++})${extension}`; }
+    return target;
+  }
+  private migrateFileDirectories(): void {
+    const prefix = `${this.root}/files/`;
+    this.messages.forEach((message: Message) => {
+      if (!message.path || !message.path.startsWith(prefix) || !message.path.substring(prefix.length).includes('/')) { return; }
+      const oldPath = message.path;
+      const oldName = message.name;
+      try {
+        if (!fs.accessSync(oldPath)) { return; }
+        const target = this.availableFilePath(message.name);
+        fs.renameSync(oldPath, target);
+        message.path = target;
+        message.name = target.substring(target.lastIndexOf('/') + 1);
+        if (!this.persist()) {
+          fs.renameSync(target, oldPath); message.path = oldPath; message.name = oldName; return;
+        }
+        try { fs.rmdirSync(oldPath.substring(0, oldPath.lastIndexOf('/'))); } catch (_) {}
+      } catch (_) { this.error = '部分旧文件迁移失败，已保留原位置'; }
+    });
+  }
   private safeName(raw: string): string {
     const name = raw.replace(/\\/g, '/').split('/').pop() || '文件';
     const clean = name.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 80);
@@ -487,6 +582,7 @@ export class ChatStore {
       const archive = JSON.parse(fs.readTextSync(path)) as Archive;
       if (!Array.isArray(archive.peers) || !Array.isArray(archive.messages)) { throw new Error('记录格式错误'); }
       this.peers = archive.peers; this.messages = archive.messages;
+      this.migrateFileDirectories();
       this.peers.forEach((peer: Peer) => { peer.online = false; });
       const pending = ['发送中', '接收中', '等待对方接收', '等待传输结束', '等待接收确认'];
       this.messages.forEach((message: Message) => {

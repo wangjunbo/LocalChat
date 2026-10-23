@@ -54,6 +54,9 @@ struct Index {
   private scrollGeneration: number = 0;
   private store?: ChatStore;
   private scroller: Scroller = new Scroller();
+  @State private fileMenuMessage?: Message = undefined;
+  @State private showRenameDialog: boolean = false;
+  @State private newFileName: string = '';
 
   aboutToAppear(): void {
     this.pageActive = true;
@@ -66,6 +69,7 @@ struct Index {
   }
   aboutToDisappear(): void { this.pageActive = false; this.scrollGeneration++; if (this.store) { this.store.onChange = () => {}; } }
   onBackPress(): boolean {
+    if (this.showRenameDialog) { this.showRenameDialog = false; return true; }
     if (this.previewPath) { this.previewPath = ''; return true; }
     if (this.settings) { this.settings = false; return true; }
     if (this.selected) { this.goBack(); return true; }
@@ -200,6 +204,44 @@ struct Index {
       buttons: [{ text: '取消', color: MUTED }, { text: '删除', color: '#BE4141' }]
     }).then((result: DialogChoice) => { if (result.index === 1) { this.store?.removeMessage(message); } });
   }
+  private showFileMenu(message: Message): void {
+    if (!message.path) { return; }
+    this.fileMenuMessage = message;
+    this.getUIContext().getPromptAction().showActionMenu({
+      title: message.name,
+      buttons: [
+        { text: '永久保存', color: BLUE },
+        { text: '分享', color: BLUE },
+        { text: '重命名', color: BLUE },
+        { text: '删除', color: '#BE4141' }
+      ]
+    }).then((result: DialogChoice) => {
+      switch (result.index) {
+        case 0: this.store?.saveToDownload(message); break;
+        case 1: this.store?.shareFile(message); break;
+        case 2: this.showRenameInput(message); return;
+        case 3: this.confirmDeleteFile(message); break;
+      }
+      this.fileMenuMessage = undefined;
+    }).catch(() => { this.fileMenuMessage = undefined; });
+  }
+  private showRenameInput(message: Message): void {
+    this.newFileName = message.name || '';
+    this.showRenameDialog = true;
+  }
+  private confirmRename(): void {
+    if (this.fileMenuMessage && this.newFileName.trim()) {
+      this.store?.renameFile(this.fileMenuMessage, this.newFileName.trim());
+    }
+    this.showRenameDialog = false;
+    this.fileMenuMessage = undefined;
+  }
+  private confirmDeleteFile(message: Message): void {
+    this.getUIContext().getPromptAction().showDialog({
+      title: '删除文件？', message: '将删除此消息及对应文件。',
+      buttons: [{ text: '取消', color: MUTED }, { text: '删除', color: '#BE4141' }]
+    }).then((result: DialogChoice) => { if (result.index === 1) { this.store?.deleteMessage(message); } });
+  }
 
   build() {
     Column({ space: 0 }) {
@@ -243,6 +285,39 @@ struct Index {
       Row().width('100%').height(this.getUIContext().px2vp(this.systemBottomPx))
         .backgroundColor(this.previewPath ? '#14202B' : (this.selected ? '#FFFFFF' : '#F4F7FA'))
     }.width('100%').height('100%').backgroundColor(this.previewPath ? '#14202B' : '#F4F7FA')
+    .bindSheet($$this.showRenameDialog, this.renameDialogBuilder(), {
+      preferType: SheetType.CENTER, height: 220, showClose: false, dragBar: false,
+      backgroundColor: Color.White
+    })
+  }
+  @Builder
+  private renameDialogBuilder() {
+    Column({ space: 20 }) {
+      Column({ space: 16 }) {
+        Text('重命名文件').fontSize(18).fontWeight(FontWeight.Medium).fontColor(INK)
+        TextInput({ text: this.newFileName })
+          .fontSize(15).height(44).borderRadius(6)
+          .onChange((value: string) => { this.newFileName = value; })
+          .width('100%')
+      }.padding(20).backgroundColor(Color.White).borderRadius(12)
+      Row({ space: 12 }) {
+        Button('取消').type(ButtonType.Normal).borderRadius(6).height(40)
+          .fontSize(16)
+          .fontColor(MUTED)
+          .backgroundColor(Color.White)
+          .layoutWeight(1)
+          .onClick(() => {
+            this.showRenameDialog = false;
+            this.fileMenuMessage = undefined;
+          })
+        Button('确定').type(ButtonType.Normal).borderRadius(6).height(40)
+          .fontSize(16)
+          .fontColor(Color.White)
+          .backgroundColor(BLUE)
+          .layoutWeight(1)
+          .onClick(() => { this.confirmRename(); })
+      }.width('100%')
+    }.width(300).padding(20).backgroundColor(Color.White).borderRadius(8)
   }
   @Builder
   private statusBanners() {
@@ -399,11 +474,28 @@ struct Index {
             }
             Text(`${sizeLabel(message.transferred)} / ${sizeLabel(message.bytes)} · ${message.status}`)
               .fontSize(10).fontColor(MUTED).maxLines(2)
+            if (message.savedUri) {
+              Button('打开所在目录').fontSize(11).fontColor(BLUE).height(28)
+                .type(ButtonType.Normal).borderRadius(4).backgroundColor('#EDF4FA')
+                .onClick(() => this.store?.openSavedDirectory(message))
+            }
             if (message.path) {
-              Button('另存到…').fontSize(11).fontColor(BLUE).height(26).type(ButtonType.Normal).borderRadius(4)
-                .backgroundColor('#EDF4FA').onClick(() => this.store?.exportFile(message))
+              Row({ space: 8 }) {
+                Button('永久保存').fontSize(11).fontColor(BLUE).height(26).type(ButtonType.Normal).borderRadius(4)
+                  .backgroundColor('#EDF4FA').onClick(() => this.store?.saveToDownload(message))
+                Button('分享').fontSize(11).fontColor(BLUE).height(26).type(ButtonType.Normal).borderRadius(4)
+                  .backgroundColor('#EDF4FA').onClick(() => this.store?.shareFile(message))
+              }
             }
           }.alignItems(HorizontalAlign.Start).padding(10).backgroundColor(Color.White).borderRadius(6)
+          .gesture(
+            LongPressGesture({ repeat: false, duration: 500 })
+              .onAction(() => {
+                if (message.path) {
+                  this.showFileMenu(message);
+                }
+              })
+          )
         } else {
           Text(message.text).fontSize(15).fontColor(INK).lineHeight(23).copyOption(CopyOptions.LocalDevice)
             .padding(12).backgroundColor(message.mine ? '#CAE4F7' : '#FFFFFF').borderRadius(6)

@@ -1,4 +1,4 @@
-export const APP_VERSION: string = '1.0.19';
+export const APP_VERSION: string = '1.0.26';
 export const ASSISTANT_ID: string = 'local-assistant';
 export class Peer {
   id: string = '';
@@ -15,6 +15,7 @@ export class Message {
   mine: boolean = false;
   date: number = Date.now();
   name: string = '';
+  savedUri: string = '';
   path: string = '';
   bytes: number = 0;
   transferred: number = 0;

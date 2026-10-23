@@ -39,6 +39,7 @@ const util = {
   Base64Helper: class { encodeToStringSync(b) { return Buffer.from(b).toString('base64'); } decodeSync(s) { return new Uint8Array(Buffer.from(s, 'base64')); } }
 };
 const kits = {
+  '@kit.ShareKit': { systemShare: {} },
   '@kit.ArkTS': { util }, '@kit.NetworkKit': { socket: {}, mdns: {} },
   '@kit.ArkData': { preferences: { getPreferencesSync: context => {
     if (!prefCache.has(context.filesDir)) prefCache.set(context.filesDir, new Map());
@@ -156,8 +157,14 @@ async function core() {
   await store.submit(ASSISTANT_ID,'离线笔记');
   const toDelete = JSON.parse(JSON.stringify(store.messages.find(m=>m.id===text.id)));
   store.removeMessage(toDelete); assert(!store.messages.some(m=>m.id===text.id));
+  const fileToDelete = JSON.parse(JSON.stringify(store.messages.find(m=>m.id===outgoing.id)));
+  assert(fs.existsSync(fileToDelete.path));
+  store.deleteMessage(fileToDelete);
+  assert(!fs.existsSync(fileToDelete.path));
+  assert(!store.messages.some(m=>m.id===fileToDelete.id));
   store.persist();
   const restored=new ChatStore(store.context);stores.push(restored);
+  assert(!restored.messages.some(m=>m.id===fileToDelete.id));
   assert(restored.messages.some(m=>m.text==='离线笔记')); assert.equal(restored.peers[0].online,false);
   const timeout=Object.assign(new Packet('offer'),{name:'timeout',size:2});await store.process(timeout,channel);
   store.incoming.get(`${peer}:${timeout.id}`).lastProgress=Date.now()-130000;store.checkTransfers();
