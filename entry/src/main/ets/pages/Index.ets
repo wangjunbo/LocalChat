@@ -1,4 +1,4 @@
-import { FrameCallback, KeyboardAvoidMode, window } from '@kit.ArkUI';
+import { FrameCallback, KeyboardAvoidMode, window, promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { fileUri } from '@kit.CoreFileKit';
@@ -205,7 +205,17 @@ struct Index {
     }).then((result: DialogChoice) => { if (result.index === 1) { this.store?.removeMessage(message); } });
   }
   private showFileMenu(message: Message): void {
-    if (!message.path) { return; }
+    if (!message.path) {
+      const buttons: [promptAction.Button, promptAction.Button?] = message.savedUri ? [
+        { text: '打开所在目录', color: BLUE }, { text: '删除记录', color: '#BE4141' }
+      ] : [{ text: '删除记录', color: '#BE4141' }];
+      this.getUIContext().getPromptAction().showActionMenu({ title: message.name, buttons: buttons })
+        .then((result: DialogChoice) => {
+          if (message.savedUri && result.index === 0) { this.store?.openSavedDirectory(message); }
+          else { this.confirmDelete(message); }
+        }).catch(() => {});
+      return;
+    }
     this.fileMenuMessage = message;
     this.getUIContext().getPromptAction().showActionMenu({
       title: message.name,
@@ -491,9 +501,7 @@ struct Index {
           .gesture(
             LongPressGesture({ repeat: false, duration: 500 })
               .onAction(() => {
-                if (message.path) {
-                  this.showFileMenu(message);
-                }
+                this.showFileMenu(message);
               })
           )
         } else {
