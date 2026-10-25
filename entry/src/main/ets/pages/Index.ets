@@ -39,6 +39,7 @@ struct Index {
   @State private selected: string = '';
   @State private returning: boolean = false;
   @State private entering: boolean = false;
+  @State private isWide: boolean = false;
   private opening: boolean = false;
   private backAfterOpening: boolean = false;
   @State private query: string = '';
@@ -127,6 +128,13 @@ struct Index {
     if (this.store) { this.store.activePeer = ''; }
     this.composerFocused = false;
     this.getUIContext().getFocusController().clearFocus();
+    if (this.isWide) {
+      this.selected = '';
+      this.draft = '';
+      this.historyQuery = '';
+      this.returning = false;
+      return;
+    }
     this.getUIContext().animateTo({
       duration: 260,
       curve: Curve.EaseOut,
@@ -139,9 +147,20 @@ struct Index {
     }, () => { this.returning = true; });
   }
   private selectPeer(id: string): void {
-    if (this.selected || this.opening || this.returning) { return; }
+    if (this.opening || this.returning) { return; }
+    if (this.selected && !this.isWide) { return; }
     this.scrollGeneration++;
     this.followLatest = true;
+    if (this.isWide) {
+      this.entering = false;
+      this.selected = id;
+      if (this.store) { this.store.activePeer = id; this.store.markRead(id); }
+      this.draft = '';
+      this.historyQuery = '';
+      this.updateState();
+      this.scrollToLatest();
+      return;
+    }
     this.entering = true;
     this.opening = true;
     this.backAfterOpening = false;
@@ -259,21 +278,35 @@ struct Index {
       Row().width('100%').height(this.getUIContext().px2vp(this.systemTopPx))
         .backgroundColor(this.previewPath ? '#14202B' : '#DAEBF9')
       Stack() {
-      Column({ space: 0 }) {
-        this.homeHeader()
-        this.statusBanners()
-        this.devices()
-      }.width('100%').height('100%').backgroundColor('#F4F7FA')
-        .translate({ x: this.selected && !this.returning && !this.entering ? '-25%' : '0%' })
-        .hitTestBehavior(this.selected ? HitTestMode.None : HitTestMode.Default)
-      if (this.selected) {
+      if (this.isWide) {
+        Row({ space: 0 }) {
+          this.homePane()
+          if (this.selected) {
+            Column({ space: 0 }) {
+              this.chatHeader()
+              this.conversation()
+            }.layoutWeight(1).height('100%').backgroundColor('#F4F7FA')
+          } else {
+            this.emptyChatPane()
+          }
+        }.width('100%').height('100%')
+      } else {
         Column({ space: 0 }) {
-          this.chatHeader()
+          this.homeHeader()
           this.statusBanners()
-          this.conversation()
+          this.devices()
         }.width('100%').height('100%').backgroundColor('#F4F7FA')
-          .translate({ x: this.returning || this.entering ? '100%' : '0%' })
-          .hitTestBehavior(this.returning ? HitTestMode.Block : HitTestMode.Default)
+          .translate({ x: this.selected && !this.returning && !this.entering ? '-25%' : '0%' })
+          .hitTestBehavior(this.selected ? HitTestMode.None : HitTestMode.Default)
+        if (this.selected) {
+          Column({ space: 0 }) {
+            this.chatHeader()
+            this.statusBanners()
+            this.conversation()
+          }.width('100%').height('100%').backgroundColor('#F4F7FA')
+            .translate({ x: this.returning || this.entering ? '100%' : '0%' })
+            .hitTestBehavior(this.returning ? HitTestMode.Block : HitTestMode.Default)
+        }
       }
 
       if (this.settings) { this.settingsPanel(); }
@@ -293,8 +326,12 @@ struct Index {
         .padding({ left: this.getUIContext().px2vp(this.systemLeftPx),
           right: this.getUIContext().px2vp(this.systemRightPx) })
       Row().width('100%').height(this.getUIContext().px2vp(this.systemBottomPx))
-        .backgroundColor(this.previewPath ? '#14202B' : (this.selected ? '#FFFFFF' : '#F4F7FA'))
+        .backgroundColor(this.previewPath ? '#14202B' : (this.selected && !this.isWide ? '#FFFFFF' : '#F4F7FA'))
     }.width('100%').height('100%').backgroundColor(this.previewPath ? '#14202B' : '#F4F7FA')
+    .onAreaChange((_oldArea: Area, area: Area) => {
+      const next: boolean = Number(area.width) >= 840;
+      if (next !== this.isWide) { this.isWide = next; }
+    })
     .bindSheet($$this.showRenameDialog, this.renameDialogBuilder(), {
       preferType: SheetType.CENTER, height: 220, showClose: false, dragBar: false,
       backgroundColor: Color.White
@@ -428,11 +465,32 @@ struct Index {
     }.padding({ left: 18, right: 18 }).layoutWeight(1).width('100%')
   }
   @Builder
+  private homePane() {
+    Column({ space: 0 }) {
+      this.homeHeader()
+      this.statusBanners()
+      this.devices()
+    }.width(340).height('100%').backgroundColor('#F4F7FA')
+      .border({ width: { right: 0.5 }, color: '#D8E2EA' })
+  }
+
+  @Builder
+  private emptyChatPane() {
+    Column({ space: 14 }) {
+      Image($r('app.media.app_icon')).width(64).height(64).borderRadius(12).opacity(0.6)
+      Text('选择左侧设备开始聊天').fontSize(16).fontColor(INK)
+      Text('消息和文件只在同一局域网内直传').fontSize(13).fontColor(MUTED)
+    }.layoutWeight(1).height('100%').justifyContent(FlexAlign.Center).backgroundColor('#F4F7FA')
+  }
+
+  @Builder
   private chatHeader() {
     Row({ space: 9 }) {
-      Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(21).fontColor([BLUE]) }
-        .width(30).height(36).type(ButtonType.Normal).backgroundColor(Color.Transparent)
-        .onClick(() => this.goBack()).accessibilityText('返回设备列表')
+      if (!this.isWide) {
+        Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(21).fontColor([BLUE]) }
+          .width(30).height(36).type(ButtonType.Normal).backgroundColor(Color.Transparent)
+          .onClick(() => this.goBack()).accessibilityText('返回设备列表')
+      }
       Column({ space: 2 }) {
         Row({ space: 7 }) {
           Text(this.title()).fontSize(16).fontWeight(FontWeight.Medium).fontColor(INK).maxLines(1)
@@ -441,7 +499,7 @@ struct Index {
         Text(this.selected === ASSISTANT_ID ? '仅保存在本机' : (this.online() ? '在线 · 局域网直连' : '离线 · 留言将在上线后发送'))
           .fontSize(10).fontColor(MUTED)
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-    }.width('100%').padding({ left: 10, right: 16, top: 8, bottom: 8 }).backgroundColor('#DAEBF9')
+    }.width('100%').padding({ left: this.isWide ? 16 : 10, right: 16, top: 8, bottom: 8 }).backgroundColor('#DAEBF9')
   }
   @Builder
   private conversation() {
@@ -584,7 +642,7 @@ struct Index {
         .fontSize(12).fontColor(MUTED).lineHeight(20)
       Button('保存').width('100%').type(ButtonType.Normal).borderRadius(5).backgroundColor(BLUE)
         .onClick(() => { this.store?.changeName(this.editingName); this.settings = false; })
-    }.padding(22).width('90%').backgroundColor(Color.White).borderRadius(8)
+    }.padding(22).width(this.isWide ? 440 : '90%').backgroundColor(Color.White).borderRadius(8)
       .shadow({ radius: 30, color: '#33000000' })
   }
 }
