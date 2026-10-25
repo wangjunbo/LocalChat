@@ -3,7 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { fileUri } from '@kit.CoreFileKit';
 import { ChatStore } from '../store/ChatStore';
-import { Peer, Message, Attachment, APP_VERSION, ASSISTANT_ID, isImage, sizeLabel, formatMessageDate } from '../model/Models';
+import { Peer, Message, Attachment, IncomingShare, APP_VERSION, ASSISTANT_ID, isImage, sizeLabel, formatMessageDate } from '../model/Models';
 
 // onIdle runs after this frame's layout/draw, so the new message has its final height.
 class AfterChatLayout extends FrameCallback {
@@ -15,6 +15,8 @@ class AfterChatLayout extends FrameCallback {
 
 interface DialogChoice { index: number; }
 class ViewState {
+  shares: IncomingShare[] = [];
+  importingShares: number = 0;
   peers: Peer[] = [];
   messages: Message[] = [];
   attachments: Attachment[] = [];
@@ -37,6 +39,8 @@ struct Index {
   @StorageLink('systemRightPx') private systemRightPx: number = 0;
   @State private state: ViewState = new ViewState();
   @State private selected: string = '';
+  @State private sharePeer: string = '';
+  @State private shareSending: boolean = false;
   @State private returning: boolean = false;
   @State private entering: boolean = false;
   @State private isWide: boolean = false;
@@ -70,6 +74,10 @@ struct Index {
   }
   aboutToDisappear(): void { this.pageActive = false; this.scrollGeneration++; if (this.store) { this.store.onChange = () => {}; } }
   onBackPress(): boolean {
+    if (this.state.shares.length || this.state.importingShares > 0) {
+      if (!this.shareSending && this.state.shares.length) { this.store?.cancelShare(this.state.shares[0].id); }
+      return true;
+    }
     if (this.showRenameDialog) { this.showRenameDialog = false; return true; }
     if (this.previewPath) { this.previewPath = ''; return true; }
     if (this.settings) { this.settings = false; return true; }
@@ -97,6 +105,15 @@ struct Index {
     }
     const previousCount = this.state.messages.filter((item: Message) => item.peer === this.selected).length;
     const state = new ViewState();
+    state.shares = this.store.incomingShares.slice();
+    state.importingShares = this.store.importingShares;
+    if (!this.state.shares.length && !this.state.importingShares && (state.shares.length || state.importingShares)) {
+      this.getUIContext().getFocusController().clearFocus();
+      this.previewPath = '';
+      this.showRenameDialog = false;
+      this.settings = false;
+    }
+    if (state.shares[0]?.id !== this.state.shares[0]?.id) { this.sharePeer = ''; }
     state.peers = JSON.parse(JSON.stringify(this.store.peers)) as Peer[];
     state.messages = JSON.parse(JSON.stringify(this.store.messages)) as Message[];
     state.attachments = this.store.attachments(this.selected).slice();
@@ -322,6 +339,7 @@ struct Index {
           Image(fileUri.getUriFromPath(this.previewPath)).objectFit(ImageFit.Contain).width('100%').layoutWeight(1)
         }.width('100%').height('100%').backgroundColor('#14202B')
       }
+      if (this.state.shares.length || this.state.importingShares > 0) { this.incomingSharePanel(); }
       }.width('100%').layoutWeight(1).clip(true)
         .padding({ left: this.getUIContext().px2vp(this.systemLeftPx),
           right: this.getUIContext().px2vp(this.systemRightPx) })
@@ -336,6 +354,82 @@ struct Index {
       preferType: SheetType.CENTER, height: 220, showClose: false, dragBar: false,
       backgroundColor: Color.White
     })
+  }
+  private async confirmShare(): Promise<void> {
+    if (!this.store || !this.sharePeer || !this.state.shares.length || this.shareSending) { return; }
+    const incoming = this.state.shares[0];
+    const peer = this.sharePeer;
+    const name = peer === ASSISTANT_ID ? '文件传输助手' : this.state.peers.find((item: Peer) => item.id === peer)?.name || '所选设备';
+    this.shareSending = true;
+    try {
+      if (await this.store.sendShare(incoming.id, peer)) {
+        this.getUIContext().getPromptAction().showToast({ message: peer === ASSISTANT_ID ? '已保存到文件传输助手' : `已加入与 ${name} 的发送队列` });
+      }
+    } finally { this.shareSending = false; }
+  }
+  @Builder
+  private shareRecipient(id: string, name: string, status: string) {
+    Row({ space: 10 }) {
+      SymbolGlyph($r('sys.symbol.person')).fontSize(22).fontColor([BLUE])
+      Column({ space: 4 }) {
+        Text(name).fontSize(15).fontColor(INK).maxLines(1)
+        Text(status).fontSize(11).fontColor(MUTED)
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      if (this.sharePeer === id) { SymbolGlyph($r('sys.symbol.checkmark')).fontSize(18).fontColor([BLUE]) }
+    }.width('100%').padding(12).borderRadius(5)
+      .backgroundColor(this.sharePeer === id ? '#DAEBF9' : Color.White)
+      .onClick(() => { if (!this.shareSending) { this.sharePeer = id; } })
+  }
+  @Builder
+  private incomingSharePanel() {
+    Column({ space: 12 }) {
+      Row({ space: 8 }) {
+        Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(21).fontColor([BLUE]) }
+          .type(ButtonType.Normal).backgroundColor(Color.Transparent).enabled(!this.shareSending && this.state.shares.length > 0)
+          .onClick(() => this.store?.cancelShare(this.state.shares[0].id)).accessibilityText('取消本次分享')
+        Text('分享至邻聊').fontSize(20).fontWeight(FontWeight.Medium).fontColor(INK)
+        Blank()
+        if (this.state.shares.length > 1) { Text(`还有 ${this.state.shares.length - 1} 份分享`).fontSize(11).fontColor(MUTED) }
+      }.width('100%')
+      this.statusBanners()
+      if (this.state.shares.length) {
+        Text(`选择接收设备 · ${this.state.shares[0].files.length} 个文件`).fontSize(13).fontColor(MUTED).width('100%')
+        Scroll() {
+          Column({ space: 6 }) {
+            ForEach(this.state.shares[0].files, (file: Attachment) => {
+              Text(`${file.name} · ${sizeLabel(file.size)}`).fontSize(13).fontColor(INK).width('100%').maxLines(2)
+            }, (file: Attachment) => file.id)
+            if (this.state.shares[0].text) { Text(this.state.shares[0].text).fontSize(13).fontColor(INK).width('100%').maxLines(5) }
+          }.width('100%').alignItems(HorizontalAlign.Start)
+        }.width('100%').constraintSize({ maxHeight: 150 })
+        List({ space: 6 }) {
+          ListItem() { this.shareRecipient(ASSISTANT_ID, '文件传输助手', '仅保存在本机') }
+          ForEach(this.state.peers, (peer: Peer) => {
+            ListItem() { this.shareRecipient(peer.id, peer.name, peer.online ? '在线 · 局域网直传' : '离线 · 上线后自动发送') }
+          }, (peer: Peer) => `${peer.id}-${peer.name}-${peer.online}`)
+          if (!this.state.peers.length) {
+            ListItem() {
+              Text('暂无附近设备。请让对方连接同一 Wi-Fi 并打开邻聊，也可先保存到本机。')
+                .fontSize(13).fontColor(MUTED).lineHeight(22).padding(12)
+            }
+          }
+        }.layoutWeight(1).width('100%')
+        Button('刷新附近设备').type(ButtonType.Normal).borderRadius(5).fontColor(BLUE).backgroundColor('#EAF4FD')
+          .onClick(() => this.store?.refresh())
+        Row({ space: 12 }) {
+          Button('取消').type(ButtonType.Normal).borderRadius(5).layoutWeight(1).enabled(!this.shareSending)
+            .onClick(() => this.store?.cancelShare(this.state.shares[0].id))
+          Button(this.shareSending ? '正在处理…' : (this.sharePeer === ASSISTANT_ID ? '确认保存' : '确认发送'))
+            .type(ButtonType.Normal).borderRadius(5).backgroundColor(BLUE).fontColor(Color.White).layoutWeight(1)
+            .enabled(!!this.sharePeer && !this.shareSending).onClick(() => this.confirmShare())
+        }.width('100%')
+      } else {
+        Blank()
+        LoadingProgress().width(36).height(36)
+        Text('正在接收分享内容…').fontSize(14).fontColor(MUTED)
+        Blank()
+      }
+    }.padding(18).width('100%').height('100%').backgroundColor('#F4F7FA')
   }
   @Builder
   private renameDialogBuilder() {

@@ -22,6 +22,7 @@
         "startWindowIcon": "$media:app_icon",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
+        "launchType": "singleton",
         "skills": [
           {
             "entities": [
@@ -29,6 +30,13 @@
             ],
             "actions": [
               "ohos.want.action.home"
+            ]
+          },
+          {
+            "actions": ["ohos.want.action.sendData"],
+            "uris": [
+              { "scheme": "file", "utd": "general.file", "maxFileSupported": 9 },
+              { "scheme": "file", "utd": "general.object", "maxFileSupported": 9 }
             ]
           }
         ]

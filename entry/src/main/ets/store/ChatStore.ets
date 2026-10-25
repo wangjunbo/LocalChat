@@ -1,5 +1,5 @@
 import { systemShare } from '@kit.ShareKit';
-import { common } from '@kit.AbilityKit';
+import { common, Want } from '@kit.AbilityKit';
 import { preferences, uniformTypeDescriptor } from '@kit.ArkData';
 import { fileIo as fs, picker, fileUri } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
@@ -9,7 +9,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { Packet, CHUNK_SIZE, messageDate } from '../network/Wire';
 import { Channel, LanNetwork } from '../network/LanNetwork';
-import { Peer, Message, Archive, Attachment, ASSISTANT_ID } from '../model/Models';
+import { Peer, Message, Archive, Attachment, IncomingShare, ASSISTANT_ID } from '../model/Models';
 
 class Transfer {
   peer: string = '';
@@ -44,6 +44,10 @@ export class ChatStore {
   activePeer: string = '';
   foreground: boolean = false;
   requestedPeer: string = '';
+  incomingShares: IncomingShare[] = [];
+  importingShares: number = 0;
+  private shareTasks: Promise<void> = Promise.resolve();
+  private sendingShare: boolean = false;
   unreadCount(peer: string = ''): number {
     return this.messages.filter((item: Message) => !item.mine && item.unread === true && (!peer || item.peer === peer)).length;
   }
@@ -178,20 +182,92 @@ export class ChatStore {
     return '';
   }
   private async stageUri(peer: string, uri: string): Promise<void> {
+    const file = await this.copyUri(uri);
+    this.queued.set(peer, this.attachments(peer).concat([file]));
+    this.changed(false);
+  }
+  private async copyUri(uri: string): Promise<Attachment> {
     const source = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+    const file = new Attachment();
     try {
       const stat = fs.statSync(source.fd);
       if (!stat.isFile()) { throw new Error('暂不支持文件夹'); }
-      const file = new Attachment();
       file.id = util.generateRandomUUID();
       file.name = this.safeName(new fileUri.FileUri(uri).name || '文件');
       file.path = this.availableFilePath(file.name);
       file.name = file.path.substring(file.path.lastIndexOf('/') + 1);
       file.size = stat.size;
       await fs.copyFile(source.fd, file.path);
-      this.queued.set(peer, this.attachments(peer).concat([file]));
-      this.changed(false);
+      return file;
+    } catch (error) {
+      if (file.path) { try { fs.unlinkSync(file.path); } catch (_) {} }
+      throw new Error((error as Error).message);
     } finally { fs.closeSync(source); }
+  }
+  receiveShare(want: Want): Promise<void> {
+    this.importingShares++;
+    this.changed(false);
+    // Serialize imports so repeated shares cannot overwrite each other or reuse a destination path.
+    this.shareTasks = this.shareTasks.then(async (): Promise<void> => {
+      const incoming = new IncomingShare();
+      incoming.id = util.generateRandomUUID();
+      try {
+        let records: systemShare.SharedRecord[];
+        try {
+          records = (await systemShare.getSharedData(want)).getRecords();
+        } catch (error) {
+          // Older file providers pass a single authorized URI directly in Want.
+          if (!want.uri?.startsWith('file://')) { throw new Error((error as Error).message); }
+          records = [{ utd: 'general.file', uri: want.uri }];
+        }
+        if (!records.length || records.length > 9) { throw new Error('每次请分享 1 至 9 项内容'); }
+        const uris: string[] = [];
+        for (const record of records) {
+          if (record.uri) {
+            if (!record.uri.startsWith('file://')) { throw new Error('暂不支持此分享地址，请分享本地文件'); }
+            if (!uris.includes(record.uri)) {
+              uris.push(record.uri);
+              incoming.files.push(await this.copyUri(record.uri));
+            }
+          } else if (record.content && ['general.text', 'general.plain-text', 'general.hyperlink'].includes(record.utd)) {
+            incoming.text += (incoming.text ? '\n' : '') + record.content;
+          } else { throw new Error('暂不支持此分享内容，请分享文件、文字或链接'); }
+        }
+        if (incoming.text && new util.TextEncoder().encodeInto(incoming.text).length > 32 * 1024) {
+          throw new Error('分享文字过长，请分段分享');
+        }
+        this.incomingShares.push(incoming);
+      } catch (error) {
+        for (const file of incoming.files) { try { fs.unlinkSync(file.path); } catch (_) {} }
+        this.report(`接收分享失败：${(error as Error).message}`);
+      } finally { this.importingShares--; this.changed(false); }
+    });
+    return this.shareTasks;
+  }
+  cancelShare(id: string): void {
+    if (this.sendingShare) { return; }
+    const incoming = this.incomingShares.find((item: IncomingShare) => item.id === id);
+    if (!incoming) { return; }
+    for (const file of incoming.files) { try { fs.unlinkSync(file.path); } catch (_) {} }
+    this.incomingShares = this.incomingShares.filter((item: IncomingShare) => item.id !== id);
+    this.changed(false);
+  }
+  async sendShare(id: string, peer: string): Promise<boolean> {
+    if (this.sendingShare) { return false; }
+    const incoming = this.incomingShares.find((item: IncomingShare) => item.id === id);
+    if (!incoming) { return false; }
+    if (peer !== ASSISTANT_ID && !this.peers.some((item: Peer) => item.id === peer)) {
+      this.report('所选设备已移除，请重新选择'); return false;
+    }
+    this.sendingShare = true;
+    try {
+      const sent = await this.submit(peer, incoming.text, incoming.files);
+      if (sent) {
+        this.incomingShares = this.incomingShares.filter((item: IncomingShare) => item.id !== id);
+        this.changed(false);
+      }
+      return sent;
+    } finally { this.sendingShare = false; }
   }
   async exportFile(selected: Message): Promise<void> {
     const message = this.messages.find((item: Message) => item.id === selected.id && item.peer === selected.peer);
@@ -272,10 +348,11 @@ export class ChatStore {
     if (!this.persist()) { this.report('无法保存删除记录'); return; }
     this.notice = '已删除'; this.changed();
   }
-  async submit(peer: string, text: string): Promise<boolean> {
+  async submit(peer: string, text: string, sharedFiles?: Attachment[]): Promise<boolean> {
     if (!this.archiveWritable) { this.report('聊天记录不可写，无法保存待发消息'); return false; }
     const content = text.trim();
-    if (!content && this.attachments(peer).length === 0) { return false; }
+    const files = sharedFiles === undefined ? this.attachments(peer).slice() : sharedFiles;
+    if (!content && files.length === 0) { return false; }
     if (content && new util.TextEncoder().encodeInto(content).length > 32 * 1024) { this.report('文字过长，请分段发送'); return false; }
     const added: Message[] = [];
     if (content) {
@@ -285,7 +362,6 @@ export class ChatStore {
       message.status = peer === ASSISTANT_ID ? '已保存到本机' : '等待对方上线';
       added.push(message);
     }
-    const files = this.attachments(peer).slice();
     for (const file of files) {
       const message = new Message();
       message.id = util.generateRandomUUID(); message.peer = peer; message.mine = true;
@@ -299,9 +375,12 @@ export class ChatStore {
       this.messages = this.messages.filter((item: Message) => !added.includes(item));
       this.onChange(); return false;
     }
-    for (const file of files) { this.removeAttachment(peer, file.id); }
+    if (sharedFiles === undefined) {
+      for (const file of files) { this.removeAttachment(peer, file.id); }
+    }
     this.changed();
-    await this.flushOutbox(peer);
+    try { await this.flushOutbox(peer); }
+    catch (error) { this.report(`消息已保存，将稍后重试发送：${(error as Error).message}`); }
     return true;
   }
   private async flushOutbox(peer: string): Promise<void> {

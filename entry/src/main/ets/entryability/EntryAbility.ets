@@ -39,6 +39,10 @@ export default class EntryAbility extends UIAbility {
   }
 
   private handleWant(want: Want): void {
+    if (want.action === 'ohos.want.action.sendData') {
+      ChatStore.shared(this.context).receiveShare(want);
+      return;
+    }
     const peer = want.parameters?.chatPeer;
     if (typeof peer === 'string') { ChatStore.shared(this.context).openFromNotification(peer); }
   }

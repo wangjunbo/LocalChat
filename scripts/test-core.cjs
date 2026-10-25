@@ -19,7 +19,7 @@ const fsAdapter = {
     return fs.mkdirSync(p, { recursive });
   },
   accessSync: p => fs.existsSync(p),
-  openSync: (p, mode = 0) => ({ fd: fs.openSync(p, (mode & 64) ? ((mode & 512) ? 'w+' : 'wx+') : (mode & 2) ? 'r+' : 'r') }),
+  openSync: (p, mode = 0) => ({ fd: fs.openSync(typeof p === 'string' && p.startsWith('file://') ? new URL(p) : p, (mode & 64) ? ((mode & 512) ? 'w+' : 'wx+') : (mode & 2) ? 'r+' : 'r') }),
   closeSync: file => fs.closeSync(typeof file === 'number' ? file : file.fd),
   statSync: p => typeof p === 'number' ? fs.fstatSync(p) : fs.statSync(p),
   readSync: (fd, buffer, opts = {}) => fs.readSync(fd, Buffer.from(buffer), 0, opts.length ?? buffer.byteLength, opts.offset ?? null),
@@ -39,7 +39,10 @@ const util = {
   Base64Helper: class { encodeToStringSync(b) { return Buffer.from(b).toString('base64'); } decodeSync(s) { return new Uint8Array(Buffer.from(s, 'base64')); } }
 };
 const kits = {
-  '@kit.ShareKit': { systemShare: {} },
+  '@kit.ShareKit': { systemShare: { getSharedData: async want => {
+    if (want.parseError) throw new Error('Invalid share data');
+    return { getRecords: () => want.records || [] };
+  } } },
   '@kit.ArkTS': { util }, '@kit.NetworkKit': { socket: {}, mdns: {} },
   '@kit.ArkData': { preferences: { getPreferencesSync: context => {
     if (!prefCache.has(context.filesDir)) prefCache.set(context.filesDir, new Map());
@@ -201,6 +204,72 @@ async function attachmentOnly() {
   }
   console.log('PASS attachment-only: image and file without text, exact bytes, receipt, empty submission rejected');
 }
+async function incomingShare() {
+  const store = createStore('incoming-share');
+  const peer = crypto.randomUUID();
+  const { channel, sent } = recordingChannel(store);
+  await store.process(Object.assign(new Packet('hello'), { sender: peer, name: 'Share receiver' }), channel);
+  const original = path.join(temporary, 'share-file.bin');
+  const bytes = crypto.randomBytes(9000); fs.writeFileSync(original, bytes);
+  const draft = path.join(temporary, 'existing-draft.bin'); fs.writeFileSync(draft, 'draft');
+  await store.stageUri(peer, draft);
+  // Back-to-back Want deliveries must remain independent; no sends before confirmation.
+  await Promise.all([
+    store.receiveShare({ records: [{ utd: 'general.file', uri: `file://${original}` }] }),
+    store.receiveShare({ records: [{ utd: 'general.file', uri: `file://${original}` }, { utd: 'general.file', uri: `file://${original}` }] })
+  ]);
+  assert.equal(store.incomingShares.length, 2);
+  assert.equal(store.incomingShares[1].files.length, 1);
+  assert.notEqual(store.incomingShares[0].files[0].path, store.incomingShares[1].files[0].path);
+  assert.equal(sent.filter(p => p.kind === 'offer').length, 0);
+  const first = store.incomingShares[0];
+  const canceledPath = store.incomingShares[1].files[0].path;
+  store.cancelShare(store.incomingShares[1].id);
+  assert(!fs.existsSync(canceledPath)); assert(fs.existsSync(original));
+  const originalPersist = store.persist;
+  store.persist = () => false;
+  assert.equal(await store.sendShare(first.id, peer), false);
+  assert.equal(store.incomingShares.length, 1); assert.equal(store.messages.length, 0);
+  assert(fs.existsSync(first.files[0].path));
+  store.persist = originalPersist;
+  const results = await Promise.all([store.sendShare(first.id, peer), store.sendShare(first.id, peer)]);
+  assert.deepEqual(results, [true, false]);
+  assert.equal(store.incomingShares.length, 0);
+  assert.equal(store.attachments(peer).length, 1); // Existing composer files are untouched.
+  assert.equal(store.messages.length, 1);
+  const offer = sent.find(p => p.kind === 'offer'); assert(offer);
+  await store.process(new Packet('accept', offer.id), channel);
+  await wait(() => sent.some(p => p.kind === 'end' && p.id === offer.id), 'shared file transfer');
+  assert.deepEqual(Buffer.concat(sent.filter(p => p.kind === 'chunk').map(p => Buffer.from(p.data, 'base64'))), bytes);
+  await store.process(new Packet('complete', offer.id), channel);
+  assert.equal(store.messages[0].status, '对方已接收');
+  // A failed item rolls back the entire batch and leaves the receiver usable.
+  const before = fs.readdirSync(path.join(store.root, 'files')).sort();
+  await store.receiveShare({ records: [{ utd: 'general.file', uri: `file://${original}` }, { utd: 'general.file', uri: 'file:///missing-share-file' }] });
+  assert.equal(store.incomingShares.length, 0);
+  assert.deepEqual(fs.readdirSync(path.join(store.root, 'files')).sort(), before);
+  assert.match(store.error, /接收分享失败/);
+  await store.receiveShare({ records: Array.from({ length: 10 }, () => ({ utd: 'general.file', uri: `file://${original}` })) });
+  assert.equal(store.incomingShares.length, 0);
+  await store.receiveShare({ records: [{ utd: 'general.file', uri: 'https://example.com/file' }] });
+  assert.equal(store.incomingShares.length, 0);
+  await store.receiveShare({ records: [{ utd: 'general.plain-text', content: '外部文字' }, { utd: 'general.hyperlink', content: 'https://example.com' }] });
+  assert.equal(await store.sendShare(store.incomingShares[0].id, ASSISTANT_ID), true);
+  assert.equal(store.messages.at(-1).text, '外部文字\nhttps://example.com');
+  await store.receiveShare({ parseError: true, uri: `file://${original}` });
+  assert.equal(store.incomingShares.length, 1);
+  assert.equal(await store.sendShare(store.incomingShares[0].id, ASSISTANT_ID), true);
+  assert.deepEqual(fs.readFileSync(store.messages.at(-1).path), bytes);
+  await store.receiveShare({ parseError: true });
+  assert.equal(store.incomingShares.length, 0);
+  await store.receiveShare({ records: [{ utd: 'general.plain-text', content: '文'.repeat(12000) }] });
+  assert.equal(store.incomingShares.length, 0);
+  // Queue remains usable after parse and size failures.
+  await store.receiveShare({ records: [{ utd: 'general.file', uri: `file://${original}` }] });
+  store.cancelShare(store.incomingShares[0].id);
+  assert.equal(store.incomingShares.length, 0);
+  console.log('PASS incoming share: serialized imports, dedup, explicit confirmation, cancellation cleanup, save failure retry, draft isolation, exact-byte transfer, rollback, limits, text/link assistant');
+}
 async function offlineDelivery() {
   const store = createStore('offline'); const peer = crypto.randomUUID();
   store.peers.push({id:peer,name:'Offline',online:false});
@@ -282,6 +351,6 @@ async function interop() {
   } finally { mac.kill(); }
 }
 (async()=>{
-  try { await core(); await attachmentOnly(); await offlineDelivery(); await interop(); }
+  try { await core(); await attachmentOnly(); await incomingShare(); await offlineDelivery(); await interop(); }
   finally { for(const store of stores) await store.stop(); fs.rmSync(temporary,{recursive:true,force:true}); }
 })().catch(error=>{console.error(error);process.exitCode=1;});

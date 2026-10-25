@@ -1,6 +1,6 @@
 # 邻聊 · HarmonyOS
 
-原生 ArkTS / ArkUI 手机客户端，与 `/Users/sunshine/SwiftProjects/local-chat` 的 macOS 邻聊互通。项目目录：`/Users/sunshine/DevEcoStudioProjects/LocalChat`。当前鸿蒙版本 **1.0.15**，包名保留为 `com.hohode.localchat`。
+原生 ArkTS / ArkUI 手机客户端，与 `/Users/sunshine/SwiftProjects/local-chat` 的 macOS 邻聊互通。项目目录：`/Users/sunshine/DevEcoStudioProjects/LocalChat`。当前鸿蒙版本 **1.0.28**，包名保留为 `com.hohode.localchat`。
 
 ## 已实现
 
@@ -25,10 +25,10 @@
 
 保留模板的目标/最低 SDK **6.1.1（API 24）**。这不是针对 HarmonyOS 4.x 的应用，也未宣称兼容比项目最低 SDK 更早的系统。如需兼容更早的 HarmonyOS NEXT，请先调整 SDK 并重新验证。
 
-HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；构建后会核验实际包内版本和图标引用，并复制交付包至 `distribution/邻聊-HarmonyOS-v1.0.15-unsigned.hap`。
+HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；构建后会核验实际包内版本和图标引用，并复制交付包至 `distribution/邻聊-HarmonyOS-v1.0.28-unsigned.hap`。
 
 图标分发素材为 `distribution/app_icon.png`（1024×1024 PNG），与 AppScope/entry 源资源一致；SDK 编译器在 HAP 中生成 512×512 运行时图标。
-使用用户配置的签名生成调试包，本次未安装到设备。签名包位于 `distribution/邻聊-HarmonyOS-v1.0.15-signed.hap`；该调试签名受配置的设备范围限制，不是公开分发包。
+使用用户配置的签名生成调试包，本次未安装到设备。签名包位于 `distribution/邻聊-HarmonyOS-v1.0.28-signed.hap`；该调试签名受配置的设备范围限制，不是公开分发包。
 
 ## 验证
 
@@ -100,3 +100,14 @@ HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；
 ## v1.0.15 输入区附件预览
 
 待发送图片及文件移入输入框内部，位于文字上方，与文字共用输入区背景。多附件横向滚动，支持移除及图片放大；发送按钮与输入区底部对齐。
+
+
+## v1.0.28 接收系统分享
+
+- 注册系统分享入口，接收本地文件、图片、文字及链接，每次最多 9 项；冷启动和已运行应用均由同一入口处理。
+- 外部文件先复制为应用内副本，再展示内容及接收设备列表。选择设备后点击“确认发送”；也可选择文件传输助手并确认保存。离线设备使用已有持久化补发队列。
+- 连续分享逐份确认；不会发送或清空当前对话草稿与原有附件。取消删除本次导入副本；读取失败回滚整份分享，保留源文件。
+- 未确认的分享只在当前进程暂存，应先确认发送或保存再退出应用。
+- 本版未安装设备。Node 适配器覆盖导入、确认、取消、失败重试和文件传输；系统分享匹配、跨应用 URI 授权及 ArkUI 交互仍待真机验证。
+
+真机验收：覆盖安装新版后，在文件管理中选单文件/多文件，在图库选单图/多图，打开系统分享并选择“邻聊”；分别在邻聊未运行、已打开聊天、打开图片预览时测试。检查选择在线设备并确认发送、选择离线设备排队、保存到文件助手、取消分享、系统返回、连续两次分享，以及原有聊天草稿和附件保持完整。每次最多分享 9 项，文件夹不支持。
