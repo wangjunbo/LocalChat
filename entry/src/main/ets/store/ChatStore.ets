@@ -1,3 +1,4 @@
+import { ShareContacts } from './ShareContacts';
 import { systemShare } from '@kit.ShareKit';
 import { common, Want } from '@kit.AbilityKit';
 import { preferences, uniformTypeDescriptor } from '@kit.ArkData';
@@ -146,6 +147,7 @@ export class ChatStore {
   removePeer(peer: Peer): void {
     if (peer.online) { return; }
     this.peers = this.peers.filter((item: Peer) => item.id !== peer.id);
+    ShareContacts.remove(this.context, peer.id);
     this.changed();
   }
   async chooseFiles(peer: string): Promise<void> {
@@ -212,6 +214,14 @@ export class ChatStore {
       const incoming = new IncomingShare();
       incoming.id = util.generateRandomUUID();
       try {
+        // Ordinary app shares have no contact. Never infer a recipient from the last share.
+        try {
+          const contact = await systemShare.getContactInfo(want);
+          if (contact.contactId && (contact.contactId === ASSISTANT_ID ||
+            this.peers.some((peer: Peer) => peer.id === contact.contactId))) {
+            incoming.peer = contact.contactId;
+          }
+        } catch (_) {}
         let records: systemShare.SharedRecord[];
         try {
           records = (await systemShare.getSharedData(want)).getRecords();
@@ -265,6 +275,10 @@ export class ChatStore {
       if (sent) {
         this.incomingShares = this.incomingShares.filter((item: IncomingShare) => item.id !== id);
         this.changed(false);
+        const recipient = this.peers.find((item: Peer) => item.id === peer);
+        if (peer === ASSISTANT_ID || recipient) {
+          ShareContacts.record(this.context, peer, peer === ASSISTANT_ID ? '文件传输助手' : recipient!.name);
+        }
       }
       return sent;
     } finally { this.sendingShare = false; }

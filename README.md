@@ -1,6 +1,6 @@
 # 邻聊 · HarmonyOS
 
-原生 ArkTS / ArkUI 手机客户端，与 `/Users/sunshine/SwiftProjects/local-chat` 的 macOS 邻聊互通。项目目录：`/Users/sunshine/DevEcoStudioProjects/LocalChat`。当前鸿蒙版本 **1.0.28**，包名保留为 `com.hohode.localchat`。
+原生 ArkTS / ArkUI 手机客户端，与 `/Users/sunshine/SwiftProjects/local-chat` 的 macOS 邻聊互通。项目目录：`/Users/sunshine/DevEcoStudioProjects/LocalChat`。当前鸿蒙版本 **1.0.30**，包名保留为 `com.hohode.localchat`。
 
 ## 已实现
 
@@ -25,10 +25,10 @@
 
 保留模板的目标/最低 SDK **6.1.1（API 24）**。这不是针对 HarmonyOS 4.x 的应用，也未宣称兼容比项目最低 SDK 更早的系统。如需兼容更早的 HarmonyOS NEXT，请先调整 SDK 并重新验证。
 
-HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；构建后会核验实际包内版本和图标引用，并复制交付包至 `distribution/邻聊-HarmonyOS-v1.0.28-unsigned.hap`。
+HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；构建后会核验实际包内版本和图标引用，并复制交付包至 `distribution/邻聊-HarmonyOS-v1.0.30-unsigned.hap`。
 
 图标分发素材为 `distribution/app_icon.png`（1024×1024 PNG），与 AppScope/entry 源资源一致；SDK 编译器在 HAP 中生成 512×512 运行时图标。
-使用用户配置的签名生成调试包，本次未安装到设备。签名包位于 `distribution/邻聊-HarmonyOS-v1.0.28-signed.hap`；该调试签名受配置的设备范围限制，不是公开分发包。
+使用用户配置的签名生成调试包，本次未安装到设备。签名包位于 `distribution/邻聊-HarmonyOS-v1.0.30-signed.hap`；该调试签名受配置的设备范围限制，不是公开分发包。
 
 ## 验证
 
@@ -111,3 +111,23 @@ HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；
 - 本版未安装设备。Node 适配器覆盖导入、确认、取消、失败重试和文件传输；系统分享匹配、跨应用 URI 授权及 ArkUI 交互仍待真机验证。
 
 真机验收：覆盖安装新版后，在文件管理中选单文件/多文件，在图库选单图/多图，打开系统分享并选择“邻聊”；分别在邻聊未运行、已打开聊天、打开图片预览时测试。检查选择在线设备并确认发送、选择离线设备排队、保存到文件助手、取消分享、系统返回、连续两次分享，以及原有聊天草稿和附件保持完整。每次最多分享 9 项，文件夹不支持。
+
+
+## v1.0.29 系统分享联系人推荐
+
+- 在“分享至邻聊”确认发送或保存成功后，将接收设备或文件传输助手作为 `SendMessage` / `Contact` 意图共享到系统推荐服务。仅共享联系人 ID、显示名称、同源应用图标及分享入口，不共享文件内容、文字或电话号码。离线接收人可在消息成功保存到待发队列后参与推荐。
+- 点击系统推荐联系人后，通过 Share Kit 的 `getContactInfo` 读取 ID，并在邻聊分享页预选对应接收人，保留文件预览及“确认发送/确认保存”。普通应用分享入口、不存在的联系人或解析失败仍进入手动选择，不沿用上次接收人。多次分享各自保存目标；删除设备时请求清除其系统推荐实体。
+- **外部接入条件**：需要按华为 Intents Kit 接入流程为 `com.hohode.localchat` 申请意图框架白名单及对应场景。应用代码已调用 `insightIntent.shareIntent`，但未注册可能返回 `1000101101`。本次未操作华为开发者后台，无法确认该包是否已开通。推荐服务失败只记录日志，不影响普通分享。系统决定推荐展示、排序和数量，不能保证每次出现。
+- 头像资源 `share_contact_icon.png` 从现有应用图标等比缩小到 96×96 PNG，避免把大尺寸应用图标作为意图数据上传。
+- 本次通过 ArkTS 构建、包内版本检查、Node 适配器推荐联系人回传/普通入口隔离/失效 ID/服务失败回退/清理回归及原始 Mac TCP 互通测试；未安装设备，尚未验证系统推荐面板实际展示。
+
+真机验收：先完成白名单接入 → 从文件管理分享至邻聊并确认发给某个设备 → 再次打开系统分享面板检查推荐 → 点击推荐项检查预选对象及文件预览 → 确认发送；分别检查普通邻聊入口、离线设备、多个分享排队、文件传输助手及删除设备后的推荐情况。推荐服务关闭或未开通时，普通分享应继续可用。
+
+接入文档：[共享联系人信息到分享推荐区](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/share-intents-share)、[Share Kit API](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/share-system-share)。本机 Intents Kit SDK 声明列出未注册错误码，代码接口以本机 SDK 及实际编译结果核对。
+
+
+## v1.0.30 分享时点击联系人直接发送
+
+系统分享面板选择邻聊后，接收页点击设备即保存到发送队列（离线设备上线后补发），点击文件传输助手即保存到本机；移除底部取消及确认按钮。仍保留内容预览、顶部系统返回图标及系统返回处理。发送过程中禁用联系人点击，避免重复提交；保存失败时保留本次分享以便重试。
+
+本版已通过 ArkTS 构建、包内版本检查、Node 平台适配器核心测试和原始 Mac TCP 互通测试。未安装设备，联系人点击、处理状态及系统返回的实际 UI 效果待真机验证。Intents Kit 联系人推荐接入暂不继续处理。

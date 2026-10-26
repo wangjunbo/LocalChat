@@ -355,10 +355,10 @@ struct Index {
       backgroundColor: Color.White
     })
   }
-  private async confirmShare(): Promise<void> {
-    if (!this.store || !this.sharePeer || !this.state.shares.length || this.shareSending) { return; }
+  private async sendIncomingShare(peer: string): Promise<void> {
+    if (!this.store || !peer || !this.state.shares.length || this.shareSending) { return; }
     const incoming = this.state.shares[0];
-    const peer = this.sharePeer;
+    this.sharePeer = peer;
     const name = peer === ASSISTANT_ID ? '文件传输助手' : this.state.peers.find((item: Peer) => item.id === peer)?.name || '所选设备';
     this.shareSending = true;
     try {
@@ -375,10 +375,12 @@ struct Index {
         Text(name).fontSize(15).fontColor(INK).maxLines(1)
         Text(status).fontSize(11).fontColor(MUTED)
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      if (this.sharePeer === id) { SymbolGlyph($r('sys.symbol.checkmark')).fontSize(18).fontColor([BLUE]) }
+      if (this.shareSending && this.sharePeer === id) { LoadingProgress().width(20).height(20) }
     }.width('100%').padding(12).borderRadius(5)
-      .backgroundColor(this.sharePeer === id ? '#DAEBF9' : Color.White)
-      .onClick(() => { if (!this.shareSending) { this.sharePeer = id; } })
+      .backgroundColor(this.shareSending && this.sharePeer === id ? '#DAEBF9' : Color.White)
+      .enabled(!this.shareSending)
+      .accessibilityText(`${name}，${status}，点击立即发送`)
+      .onClick(() => this.sendIncomingShare(id))
   }
   @Builder
   private incomingSharePanel() {
@@ -393,7 +395,7 @@ struct Index {
       }.width('100%')
       this.statusBanners()
       if (this.state.shares.length) {
-        Text(`选择接收设备 · ${this.state.shares[0].files.length} 个文件`).fontSize(13).fontColor(MUTED).width('100%')
+        Text(`点击联系人立即发送 · ${this.state.shares[0].files.length} 个文件`).fontSize(13).fontColor(MUTED).width('100%')
         Scroll() {
           Column({ space: 6 }) {
             ForEach(this.state.shares[0].files, (file: Attachment) => {
@@ -416,13 +418,7 @@ struct Index {
         }.layoutWeight(1).width('100%')
         Button('刷新附近设备').type(ButtonType.Normal).borderRadius(5).fontColor(BLUE).backgroundColor('#EAF4FD')
           .onClick(() => this.store?.refresh())
-        Row({ space: 12 }) {
-          Button('取消').type(ButtonType.Normal).borderRadius(5).layoutWeight(1).enabled(!this.shareSending)
-            .onClick(() => this.store?.cancelShare(this.state.shares[0].id))
-          Button(this.shareSending ? '正在处理…' : (this.sharePeer === ASSISTANT_ID ? '确认保存' : '确认发送'))
-            .type(ButtonType.Normal).borderRadius(5).backgroundColor(BLUE).fontColor(Color.White).layoutWeight(1)
-            .enabled(!!this.sharePeer && !this.shareSending).onClick(() => this.confirmShare())
-        }.width('100%')
+
       } else {
         Blank()
         LoadingProgress().width(36).height(36)

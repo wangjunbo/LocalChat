@@ -38,8 +38,24 @@ const util = {
   TextDecoder: class { constructor(_, options) { this.decoder = new TextDecoder('utf-8', options); } decodeToString(b) { return this.decoder.decode(b); } },
   Base64Helper: class { encodeToStringSync(b) { return Buffer.from(b).toString('base64'); } decodeSync(s) { return new Uint8Array(Buffer.from(s, 'base64')); } }
 };
+const sharedContacts = [];
+const removedContacts = [];
+let rejectContactDonation = false;
+global.$r = name => name;
 const kits = {
-  '@kit.ShareKit': { systemShare: { getSharedData: async want => {
+  'BuildProfile': { default: { BUNDLE_NAME: 'com.hohode.localchat' } },
+  '@kit.PerformanceAnalysisKit': { hilog: { warn: () => {} } },
+  '@kit.IntentsKit': { insightIntent: {
+    shareIntent: async (_, intents) => {
+      if (rejectContactDonation) throw new Error('Not allowlisted');
+      sharedContacts.push(...intents);
+    },
+    deleteEntity: async (_, type, ids) => removedContacts.push(...ids)
+  } },
+  '@kit.ShareKit': { systemShare: { getContactInfo: async want => {
+    if (!want.contact) throw new Error('No contact');
+    return want.contact;
+  }, getSharedData: async want => {
     if (want.parseError) throw new Error('Invalid share data');
     return { getRecords: () => want.records || [] };
   } } },
@@ -80,7 +96,7 @@ async function wait(check, label, timeout = 10000) {
 }
 function createStore(name) {
   const filesDir = path.join(temporary, name); fs.mkdirSync(filesDir, { recursive: true });
-  const store = new ChatStore({ filesDir }); stores.push(store); return store;
+  const store = new ChatStore({ filesDir, resourceManager: { getMediaContent: async () => new Uint8Array([1, 2, 3]) } }); stores.push(store); return store;
 }
 function recordingChannel(store) {
   const channel = new Channel(); const sent = [];
@@ -215,10 +231,12 @@ async function incomingShare() {
   await store.stageUri(peer, draft);
   // Back-to-back Want deliveries must remain independent; no sends before confirmation.
   await Promise.all([
-    store.receiveShare({ records: [{ utd: 'general.file', uri: `file://${original}` }] }),
+    store.receiveShare({ contact: { contactType: 'Contact', contactId: peer }, records: [{ utd: 'general.file', uri: `file://${original}` }] }),
     store.receiveShare({ records: [{ utd: 'general.file', uri: `file://${original}` }, { utd: 'general.file', uri: `file://${original}` }] })
   ]);
   assert.equal(store.incomingShares.length, 2);
+  assert.equal(store.incomingShares[0].peer, peer);
+  assert.equal(store.incomingShares[1].peer, '');
   assert.equal(store.incomingShares[1].files.length, 1);
   assert.notEqual(store.incomingShares[0].files[0].path, store.incomingShares[1].files[0].path);
   assert.equal(sent.filter(p => p.kind === 'offer').length, 0);
@@ -228,13 +246,21 @@ async function incomingShare() {
   assert(!fs.existsSync(canceledPath)); assert(fs.existsSync(original));
   const originalPersist = store.persist;
   store.persist = () => false;
+  const donatedBeforeFailure = sharedContacts.length;
   assert.equal(await store.sendShare(first.id, peer), false);
+  await delay(0);
+  assert.equal(sharedContacts.length, donatedBeforeFailure);
   assert.equal(store.incomingShares.length, 1); assert.equal(store.messages.length, 0);
   assert(fs.existsSync(first.files[0].path));
   store.persist = originalPersist;
   const results = await Promise.all([store.sendShare(first.id, peer), store.sendShare(first.id, peer)]);
   assert.deepEqual(results, [true, false]);
   assert.equal(store.incomingShares.length, 0);
+  await wait(() => sharedContacts.some(i => i.intentEntityInfo.entityId === peer), 'contact donation');
+  const donated = sharedContacts.find(i => i.intentEntityInfo.entityId === peer);
+  assert.equal(donated.intentEntityInfo.name, 'Share receiver');
+  assert.equal(donated.intentEntityInfo.extras.shareParams.abilityName, 'EntryAbility');
+  assert.equal(donated.intentActionInfo.actionMode, 'EXECUTED');
   assert.equal(store.attachments(peer).length, 1); // Existing composer files are untouched.
   assert.equal(store.messages.length, 1);
   const offer = sent.find(p => p.kind === 'offer'); assert(offer);
@@ -264,11 +290,30 @@ async function incomingShare() {
   assert.equal(store.incomingShares.length, 0);
   await store.receiveShare({ records: [{ utd: 'general.plain-text', content: '文'.repeat(12000) }] });
   assert.equal(store.incomingShares.length, 0);
+  // Stale or empty IDs must not preselect any recipient.
+  for (const contact of [
+    { contactType: 'Contact', contactId: 'removed-device' },
+    { contactType: 'Contact', contactId: '' }
+  ]) {
+    await store.receiveShare({ contact, records: [{ utd: 'general.plain-text', content: 'test' }] });
+    assert.equal(store.incomingShares[0].peer, '');
+    store.cancelShare(store.incomingShares[0].id);
+  }
+  rejectContactDonation = true;
+  await store.receiveShare({ contact: { contactType: 'Contact', contactId: ASSISTANT_ID },
+    records: [{ utd: 'general.plain-text', content: 'allowlist fallback' }] });
+  assert.equal(store.incomingShares[0].peer, ASSISTANT_ID);
+  assert.equal(await store.sendShare(store.incomingShares[0].id, ASSISTANT_ID), true);
+  await delay(0);
+  rejectContactDonation = false;
+  store.peers.find(p => p.id === peer).online = false;
+  store.removePeer(store.peers.find(p => p.id === peer));
+  await wait(() => removedContacts.includes(peer), 'contact removal');
   // Queue remains usable after parse and size failures.
   await store.receiveShare({ records: [{ utd: 'general.file', uri: `file://${original}` }] });
   store.cancelShare(store.incomingShares[0].id);
   assert.equal(store.incomingShares.length, 0);
-  console.log('PASS incoming share: serialized imports, dedup, explicit confirmation, cancellation cleanup, save failure retry, draft isolation, exact-byte transfer, rollback, limits, text/link assistant');
+  console.log('PASS incoming share: serialized imports, dedup, explicit confirmation, cancellation cleanup, save failure retry, draft isolation, exact-byte transfer, rollback, limits, text/link assistant, recommended contact routing/donation/removal, unavailable service fallback');
 }
 async function offlineDelivery() {
   const store = createStore('offline'); const peer = crypto.randomUUID();

@@ -16,3 +16,15 @@
 尚未真机验证：图片粘贴、相册/文件选择器、大图查看、手机与 Mac 的完整双向文件传输。之前的跨语言 TCP 测试使用 ArkTS 业务代码的 Node 平台适配器，不等同于这些原生路径的真机验证。
 
 测试未向现有 Mac 会话发送消息。
+
+## 2026-10-26：v1.0.29 系统分享联系人推荐排查
+
+- 通过只读 `hdc shell bm dump -n com.hohode.localchat` 确认设备安装版本为 1.0.29。
+- 用户从系统分享入口选择邻聊，并选择文件传输助手确认保存；本次未安装应用，未向其他客户端发送测试消息。
+- 读取 `hilog -T LocalChat`，10:14:21 捕获实际返回：
+
+```text
+Share contact recommendation unavailable: {"message":"The application has not been registered with the InsightIntent.","code":1000101101}
+```
+
+结论：本次联系人共享调用被系统以应用未注册拒绝。需要完成华为 Intents Kit 意图框架注册/白名单接入后再验证推荐展示。本条仅验证调用失败原因，不代表联系人推荐、推荐项跳转及发送确认 UI 已通过真机验收。
