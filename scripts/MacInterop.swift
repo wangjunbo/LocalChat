@@ -27,9 +27,25 @@ import AppKit
                     let fixture = root.appendingPathComponent("mac-fixture.bin")
                     try bytes.write(to: fixture)
                     store.offerFile(fixture, to: peer.id)
+                    let folder = root.appendingPathComponent("mac-folder 中文")
+                    try FileManager.default.createDirectory(at: folder.appendingPathComponent("子目录/空目录"), withIntermediateDirectories: true)
+                    try bytes.write(to: folder.appendingPathComponent("子目录/data.bin"))
+                    try Data().write(to: folder.appendingPathComponent("zero"))
+                    store.offerFile(folder, to: peer.id)
+                    let empty = root.appendingPathComponent("mac-empty")
+                    try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+                    store.offerFile(empty, to: peer.id)
                 }
                 if let file = store.messages[peer.id]?.first(where: { $0.fileName == "phone-fixture.bin" && $0.status == "已保存" }), let url = file.url {
                     guard try Data(contentsOf: url) == bytes else { throw CocoaError(.fileReadCorruptFile) }
+                    guard let folder = store.messages[peer.id]?.first(where: { $0.fileName == "phone-folder 中文" && $0.status == "已保存" })?.url,
+                          let empty = store.messages[peer.id]?.first(where: { $0.fileName == "phone-empty" && $0.status == "已保存" })?.url else {
+                        try await Task.sleep(nanoseconds: 20_000_000); continue
+                    }
+                    guard try Data(contentsOf: folder.appendingPathComponent("子目录/data.bin")) == bytes,
+                          FileManager.default.fileExists(atPath: folder.appendingPathComponent("子目录/空目录").path),
+                          (try Data(contentsOf: folder.appendingPathComponent("zero"))).isEmpty,
+                          (try FileManager.default.contentsOfDirectory(atPath: empty.path)).isEmpty else { throw CocoaError(.fileReadCorruptFile) }
                     print("MAC_PASS"); fflush(stdout)
                     try await Task.sleep(nanoseconds: 2_000_000_000)
                     return

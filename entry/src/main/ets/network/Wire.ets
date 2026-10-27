@@ -15,6 +15,9 @@ export class Packet {
   runID?: string;
   supportsProgress?: boolean;
   deviceType?: string;
+  supportsFolders?: boolean;
+  isDirectory?: boolean;
+  entryCount?: number;
   // Original send time in Unix epoch milliseconds.
   sentAt?: number;
   constructor(kind: string = '', id?: string) {

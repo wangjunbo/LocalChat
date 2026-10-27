@@ -25,6 +25,13 @@ const fsAdapter = {
   readSync: (fd, buffer, opts = {}) => fs.readSync(fd, Buffer.from(buffer), 0, opts.length ?? buffer.byteLength, opts.offset ?? null),
   writeSync: (fd, data, opts = {}) => typeof data === 'string' ? fs.writeSync(fd, data) : fs.writeSync(fd, Buffer.from(data), 0, opts.length ?? data.byteLength, opts.offset ?? null),
   readTextSync: p => fs.readFileSync(p, 'utf8'),
+  lstatSync: p => {
+    try { return fs.lstatSync(typeof p === 'string' && p.startsWith('file://') ? new URL(p) : p); }
+    catch (error) { if (error.code === 'ENOENT') error.code = 13900002; throw error; }
+  },
+  listFileSync: p => fs.readdirSync(p),
+  rmdirSync: p => fs.rmdirSync(p),
+  copy: async (src, dest) => fs.cpSync(new URL(src), new URL(dest), { recursive: true, dereference: false, force: true }),
   renameSync: fs.renameSync,
   unlinkSync: fs.unlinkSync,
   copyFile: async (source, target) => {
@@ -38,6 +45,7 @@ const util = {
   TextDecoder: class { constructor(_, options) { this.decoder = new TextDecoder('utf-8', options); } decodeToString(b) { return this.decoder.decode(b); } },
   Base64Helper: class { encodeToStringSync(b) { return Buffer.from(b).toString('base64'); } decodeSync(s) { return new Uint8Array(Buffer.from(s, 'base64')); } }
 };
+let pickedDirectory = [];
 const sharedContacts = [];
 const removedContacts = [];
 let rejectContactDonation = false;
@@ -65,7 +73,7 @@ const kits = {
     const values = prefCache.get(context.filesDir);
     return { getSync: (key, fallback) => values.get(key) ?? fallback, putSync: (key, value) => values.set(key, value), flush: async () => {} };
   } } },
-  '@kit.CoreFileKit': { fileIo: fsAdapter, picker: {}, fileUri: { FileUri: class { constructor(uri) { this.name = path.basename(uri); } } } },
+  '@kit.CoreFileKit': { fileIo: fsAdapter, picker: { DocumentSelectMode: { FOLDER: 1 }, DocumentViewPicker: class { async select() { return pickedDirectory; } } }, fileUri: { getUriFromPath: p => require('node:url').pathToFileURL(p).href, FileUri: class { constructor(uri) { this.name = path.basename(uri.startsWith('file://') ? require('node:url').fileURLToPath(uri) : uri); } } } },
   '@kit.MediaLibraryKit': { photoAccessHelper: {} }, '@kit.ImageKit': { image: {} },
   '@kit.BasicServicesKit': { deviceInfo: { brand: 'Test' }, pasteboard: {} }
 };
@@ -356,6 +364,83 @@ async function offlineDelivery() {
   assert.equal(sent.at(-1).kind,'complete'); assert.equal(restored.messages.filter(m=>m.id===received.id).length,1);
   console.log('PASS offline: durable text/file queue, restart, source removal, cancellation, reconnect, receipt deduplication');
 }
+async function folders() {
+  const store = createStore('folders'); const { channel, sent } = recordingChannel(store);
+  const peer = crypto.randomUUID();
+  await store.process(Object.assign(new Packet('hello'), { sender: peer, name: 'Folder peer', supportsFolders: true }), channel);
+  const offer = (id, name, size, entryCount) => Object.assign(new Packet('offer', id), { name, size, isDirectory: true, entryCount });
+  const entry = (id, name, size, isDirectory) => Object.assign(new Packet('entry', id), { name, size, isDirectory });
+  await store.process(offer('valid', '目录', 3, 3), channel);
+  await store.process(entry('valid', '空目录', 0, true), channel);
+  await store.process(entry('valid', '空文件', 0, false), channel);
+  await store.process(entry('valid', '文本', 3, false), channel);
+  await store.process(Object.assign(new Packet('chunk', 'valid'), {data: Buffer.from('abc').toString('base64')}), channel);
+  await store.process(new Packet('end', 'valid'), channel);
+  const saved = store.messages.find(m => m.id === 'valid');
+  assert.equal(saved.status, '已保存'); assert(saved.isDirectory);
+  assert.equal(fs.readFileSync(path.join(saved.path, '文本'), 'utf8'), 'abc');
+  assert(fs.statSync(path.join(saved.path, '空目录')).isDirectory());
+  assert.equal(fs.statSync(path.join(saved.path, '空文件')).size, 0);
+  await store.process(offer('collision', '目录', 0, 0), channel);
+  await store.process(new Packet('end', 'collision'), channel);
+  const collision = store.messages.find(m => m.id === 'collision');
+  assert.equal(collision.status, '已保存'); assert.notEqual(collision.path, saved.path);
+  for (const bad of ['../escape', '/absolute', 'a/../b', 'a//b', 'a/', 'a\\b', 'a\0b']) {
+    const id = crypto.randomUUID();
+    await store.process(offer(id, 'unsafe', 0, 1), channel);
+    const partial = store.incoming.get(`${peer}:${id}`).path;
+    await store.process(entry(id, bad, 0, false), channel);
+    assert(!store.incoming.has(`${peer}:${id}`)); assert(!fs.existsSync(partial));
+    assert(sent.some(p => p.id === id && p.kind === 'reject'));
+  }
+  for (const [id, size, count] of [['incomplete', 0, 1], ['short-file', 3, 1], ['duplicate', 0, 2]]) {
+    await store.process(offer(id, id, size, count), channel);
+    const partial = store.incoming.get(`${peer}:${id}`).path;
+    if (id === 'short-file') { await store.process(entry(id, 'file', 3, false), channel); }
+    if (id === 'duplicate') {
+      await store.process(entry(id, 'same', 0, true), channel);
+      await store.process(entry(id, 'same', 0, true), channel);
+    }
+    await store.process(new Packet('end', id), channel);
+    assert.notEqual(store.messages.find(m => m.id === id).status, '已保存'); assert(!fs.existsSync(partial));
+  }
+  await store.process(offer('cancel', 'cancel', 0, 1), channel);
+  const partial = store.incoming.get(`${peer}:cancel`).path;
+  await store.process(entry('cancel', 'nested', 0, true), channel);
+  store.fail(`${peer}:cancel`, '连接断开，请重试', false);
+  assert(!fs.existsSync(partial));
+  const original = path.join(temporary, '离线 文件夹');
+  fs.mkdirSync(path.join(original, '嵌套', '空目录'), { recursive: true });
+  fs.writeFileSync(path.join(original, '嵌套', '内容'), 'folder bytes');
+  const offline = createStore('folder-offline');
+  await offline.stageUri(peer, original); assert(offline.attachments(peer)[0].isDirectory);
+  await offline.submit(peer, ''); fs.rmSync(original, { recursive: true });
+  const restored = createStore('folder-offline');
+  const r = recordingChannel(restored);
+  await restored.process(Object.assign(new Packet('hello'), { sender: peer, name: 'Old peer' }), r.channel);
+  assert(!r.sent.some(p => p.kind === 'offer')); assert(restored.messages[0].pendingDelivery);
+  await restored.process(Object.assign(new Packet('hello'), { sender: peer, name: 'New peer', supportsFolders: true }), r.channel);
+  const pending = r.sent.find(p => p.kind === 'offer'); assert(pending.isDirectory); assert.equal(pending.entryCount, 3);
+  await restored.process(new Packet('accept', pending.id), r.channel);
+  await wait(() => r.sent.some(p => p.kind === 'end'), 'offline folder transmission');
+  assert.equal(Buffer.concat(r.sent.filter(p => p.kind === 'chunk').map(p => Buffer.from(p.data, 'base64'))).toString(), 'folder bytes');
+  await restored.process(new Packet('complete', pending.id), r.channel);
+  assert(!restored.messages[0].pendingDelivery);
+  const exportRoot = path.join(temporary, 'folder-export'); fs.mkdirSync(exportRoot);
+  pickedDirectory = [require('node:url').pathToFileURL(exportRoot).href];
+  const savedPath = saved.path;
+  await store.exportFile(saved);
+  assert.equal(saved.path, ''); assert(saved.savedUri); assert(!fs.existsSync(savedPath));
+  assert.equal(fs.readFileSync(path.join(exportRoot, '目录', '文本'), 'utf8'), 'abc');
+  assert(fs.statSync(path.join(exportRoot, '目录', '空目录')).isDirectory());
+  collision.name = '目录'; store.error = '';
+  const collisionSource = collision.path;
+  await store.exportFile(collision);
+  assert.match(store.error, /已存在/); assert.equal(collision.path, collisionSource); assert(fs.existsSync(collisionSource));
+  assert.equal(fs.readFileSync(path.join(exportRoot, '目录', '文本'), 'utf8'), 'abc');
+  pickedDirectory = [];
+  console.log('PASS folders: nested/empty directories and files, collision handling, traversal/duplicate/missing entries, short files, cancellation cleanup, durable offline folder queue, old-client negotiation, folder export and overwrite protection');
+}
 async function interop() {
   const macRoot=process.env.LANCHAT_MAC_SOURCE || '/Users/sunshine/SwiftProjects/local-chat';
   if (!fs.existsSync(path.join(macRoot,'Sources/LanChat/ChatStore.swift'))) throw new Error('Set LANCHAT_MAC_SOURCE to Mac project for interoperability test');
@@ -387,15 +472,26 @@ async function interop() {
     const fromMac=store.messages.find(m=>m.name==='mac-fixture.bin');
     const expected=Buffer.from(Array.from({length:180000},(_,i)=>i%251));
     assert.deepEqual(fs.readFileSync(fromMac.path),expected);
+    await wait(()=>store.messages.some(m=>m.name==='mac-folder 中文'&&m.status==='已保存'),'Mac folder');
+    await wait(()=>store.messages.some(m=>m.name==='mac-empty'&&m.status==='已保存'),'Mac empty folder');
+    const macFolder=store.messages.find(m=>m.name==='mac-folder 中文'); assert(macFolder.isDirectory);
+    assert.deepEqual(fs.readFileSync(path.join(macFolder.path,'子目录','data.bin')),expected);
+    assert(fs.statSync(path.join(macFolder.path,'子目录','空目录')).isDirectory());
+    assert.equal(fs.statSync(path.join(macFolder.path,'zero')).size,0);
+    const phoneFolder=path.join(temporary,'phone-folder 中文');
+    fs.mkdirSync(path.join(phoneFolder,'子目录','空目录'),{recursive:true});
+    fs.writeFileSync(path.join(phoneFolder,'子目录','data.bin'),expected);fs.writeFileSync(path.join(phoneFolder,'zero'),'');
+    const phoneEmpty=path.join(temporary,'phone-empty');fs.mkdirSync(phoneEmpty);
+    await store.stageUri(channel.peer,phoneFolder); await store.stageUri(channel.peer,phoneEmpty); await store.submit(channel.peer,'');
     const upload=path.join(temporary,'phone-fixture.bin');fs.writeFileSync(upload,expected);
     await store.stageUri(channel.peer,upload);await store.submit(channel.peer,'');
     await wait(()=>store.messages.some(m=>m.name==='phone-fixture.bin'&&m.status==='对方已接收'),'Phone file delivery');
     await wait(()=>log.includes('MAC_PASS'),'Mac verification');
     assert(!error,error?.message);connection.destroy();
-    console.log('PASS real TCP interoperability: original Swift ChatStore ↔ ArkTS store (Node platform adapter), PC/Phone, Chinese messages, bidirectional 180 KB files and receipt confirmation');
+    console.log('PASS real TCP interoperability: original Swift ChatStore ↔ ArkTS store (Node platform adapter), PC/Phone, Chinese messages, bidirectional 180 KB files, native folders, Unicode paths, nested/empty directories, zero-byte files and receipt confirmation');
   } finally { mac.kill(); }
 }
 (async()=>{
-  try { await core(); await attachmentOnly(); await incomingShare(); await offlineDelivery(); await interop(); }
+  try { await core(); await attachmentOnly(); await incomingShare(); await offlineDelivery(); await folders(); await interop(); }
   finally { for(const store of stores) await store.stop(); fs.rmSync(temporary,{recursive:true,force:true}); }
 })().catch(error=>{console.error(error);process.exitCode=1;});

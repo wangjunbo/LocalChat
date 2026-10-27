@@ -8,6 +8,7 @@ export class Channel {
   peer: string = '';
   heartbeat: boolean = false;
   progress: boolean = false;
+  folders: boolean = false;
   lastSeen: number = Date.now();
   created: number = Date.now();
   closed: boolean = false;

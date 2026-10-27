@@ -1,4 +1,4 @@
-export const APP_VERSION: string = '1.0.30';
+export const APP_VERSION: string = '1.0.31';
 export const ASSISTANT_ID: string = 'local-assistant';
 export class Peer {
   id: string = '';
@@ -7,6 +7,7 @@ export class Peer {
   deviceType: string = '';
 }
 export class Message {
+  isDirectory: boolean = false;
   pendingDelivery: boolean = false;
   unread: boolean = false;
   id: string = '';
@@ -22,6 +23,7 @@ export class Message {
   status: string = '';
 }
 export class Attachment {
+  isDirectory: boolean = false;
   id: string = '';
   name: string = '';
   path: string = '';

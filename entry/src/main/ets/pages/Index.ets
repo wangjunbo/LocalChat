@@ -621,12 +621,12 @@ struct Index {
       Column({ space: 6 }) {
         if (message.name) {
           Column({ space: 7 }) {
-            if (message.path && isImage(message.name)) {
+            if (!message.isDirectory && message.path && isImage(message.name)) {
               Image(fileUri.getUriFromPath(message.path)).width(210).height(150).objectFit(ImageFit.Contain).borderRadius(4)
                 .onClick(() => { this.previewPath = message.path; })
             } else {
               Row({ space: 9 }) {
-                SymbolGlyph($r('sys.symbol.doc')).fontSize(24).fontColor([BLUE])
+                SymbolGlyph(message.isDirectory ? $r('sys.symbol.folder') : $r('sys.symbol.doc')).fontSize(24).fontColor([BLUE])
                 Text(message.name).fontSize(13).fontColor(INK).maxLines(2).layoutWeight(1)
               }.width(210)
             }
@@ -674,6 +674,8 @@ struct Index {
           .onClick(() => this.store?.chooseImages(this.selected))
         Button('文件').height(30).fontSize(13).fontColor(BLUE).type(ButtonType.Normal).backgroundColor(Color.Transparent)
           .onClick(() => this.store?.chooseFiles(this.selected))
+        Button('文件夹').height(30).fontSize(13).fontColor(BLUE).type(ButtonType.Normal).backgroundColor(Color.Transparent)
+          .onClick(() => this.store?.chooseFolder(this.selected))
         PasteButton({ icon: PasteIconStyle.LINES, text: PasteDescription.PASTE, buttonType: ButtonType.Normal }).fontSize(12)
           .onClick((_event: ClickEvent, result: PasteButtonOnClickResult) => {
             if (result === PasteButtonOnClickResult.SUCCESS) {
@@ -691,7 +693,7 @@ struct Index {
               Row({ space: 8 }) {
                 ForEach(this.state.attachments || [], (attachment: Attachment) => {
                   Column({ space: 2 }) {
-                    if (isImage(attachment.name)) {
+                    if (!attachment.isDirectory && isImage(attachment.name)) {
                       Image(fileUri.getUriFromPath(attachment.path)).width(80).height(64).objectFit(ImageFit.Contain)
                         .onClick(() => { this.previewPath = attachment.path; })
                     } else { Text(attachment.name).fontSize(10).width(80).height(64).maxLines(3) }
