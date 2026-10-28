@@ -12,6 +12,29 @@ const root = path.resolve(__dirname, '..');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'lanchat-harmony-test-'));
 const stores = [];
 const prefCache = new Map();
+const copyCalls = [];
+let failFolderCopy = false;
+function nativePath(uriOrPath) {
+  return typeof uriOrPath === 'string' && uriOrPath.startsWith('file://') ? decodeURIComponent(new URL(uriOrPath).pathname) : uriOrPath;
+}
+// Keep these runtime types separate. FileUri does NOT inherit URI operations
+// on the user's device, despite the SDK's TypeScript declaration.
+class FileUriAdapter {
+  constructor(uriOrPath) {
+    this.url = uriOrPath.startsWith('file://') ? new URL(uriOrPath) : require('node:url').pathToFileURL(uriOrPath);
+  }
+  get name() { return path.basename(nativePath(this.url.href)); }
+}
+class URIAdapter {
+  constructor(value) { this.url = new URL(value); }
+  getSegment() { return this.url.pathname.split('/').filter(Boolean).map(segment => decodeURIComponent(segment)); }
+  addSegment(segment) {
+    const result = new URL(this.url.href);
+    result.pathname = result.pathname.replace(/\/$/, '') + '/' + encodeURIComponent(segment);
+    return new URIAdapter(result.href);
+  }
+  toString() { return this.url.href; }
+}
 const fsAdapter = {
   OpenMode: { READ_ONLY: 0, READ_WRITE: 2, CREATE: 64, TRUNC: 512 },
   mkdirSync: (p, recursive = false) => {
@@ -26,12 +49,30 @@ const fsAdapter = {
   writeSync: (fd, data, opts = {}) => typeof data === 'string' ? fs.writeSync(fd, data) : fs.writeSync(fd, Buffer.from(data), 0, opts.length ?? data.byteLength, opts.offset ?? null),
   readTextSync: p => fs.readFileSync(p, 'utf8'),
   lstatSync: p => {
-    try { return fs.lstatSync(typeof p === 'string' && p.startsWith('file://') ? new URL(p) : p); }
+    try { return fs.lstatSync(nativePath(p)); }
     catch (error) { if (error.code === 'ENOENT') error.code = 13900002; throw error; }
   },
   listFileSync: p => fs.readdirSync(p),
   rmdirSync: p => fs.rmdirSync(p),
-  copy: async (src, dest) => fs.cpSync(new URL(src), new URL(dest), { recursive: true, dereference: false, force: true }),
+  copy: async (src, dest) => {
+    const source = nativePath(src), destination = nativePath(dest);
+    copyCalls.push({ source: src, destination: dest });
+    const stat = fs.statSync(source);
+    if (stat.isDirectory()) {
+      // Match OpenHarmony FileCopyManager: the destination must already exist
+      // and be a directory; the source basename is created INSIDE it.
+      if (!fs.existsSync(destination) || !fs.statSync(destination).isDirectory() || destination === source || destination.startsWith(source + path.sep)) {
+        const error = new Error('Invalid argument'); error.code = 13900020; throw error;
+      }
+      const target = path.join(destination, path.basename(source));
+      if (failFolderCopy) {
+        fs.mkdirSync(target, { recursive: true });
+        fs.writeFileSync(path.join(target, 'partial'), 'interrupted');
+        const error = new Error('No space left on device'); error.code = 13900028; throw error;
+      }
+      fs.cpSync(source, target, { recursive: true, dereference: false, force: true });
+    } else { fs.copyFileSync(source, destination); }
+  },
   renameSync: fs.renameSync,
   unlinkSync: fs.unlinkSync,
   copyFile: async (source, target) => {
@@ -67,13 +108,14 @@ const kits = {
     if (want.parseError) throw new Error('Invalid share data');
     return { getRecords: () => want.records || [] };
   } } },
-  '@kit.ArkTS': { util }, '@kit.NetworkKit': { socket: {}, mdns: {} },
+  '@kit.ArkUI': { FrameCallback: class {}, KeyboardAvoidMode: {}, window: {}, promptAction: {} },
+  '@kit.ArkTS': { util, uri: { URI: URIAdapter } }, '@kit.NetworkKit': { socket: {}, mdns: {} },
   '@kit.ArkData': { preferences: { getPreferencesSync: context => {
     if (!prefCache.has(context.filesDir)) prefCache.set(context.filesDir, new Map());
     const values = prefCache.get(context.filesDir);
     return { getSync: (key, fallback) => values.get(key) ?? fallback, putSync: (key, value) => values.set(key, value), flush: async () => {} };
   } } },
-  '@kit.CoreFileKit': { fileIo: fsAdapter, picker: { DocumentSelectMode: { FOLDER: 1 }, DocumentViewPicker: class { async select() { return pickedDirectory; } } }, fileUri: { getUriFromPath: p => require('node:url').pathToFileURL(p).href, FileUri: class { constructor(uri) { this.name = path.basename(uri.startsWith('file://') ? require('node:url').fileURLToPath(uri) : uri); } } } },
+  '@kit.CoreFileKit': { fileIo: fsAdapter, picker: { DocumentSelectMode: { FOLDER: 1 }, DocumentViewPicker: class { async select() { return pickedDirectory; } } }, fileUri: { getUriFromPath: p => require('node:url').pathToFileURL(p).href, FileUri: FileUriAdapter } },
   '@kit.MediaLibraryKit': { photoAccessHelper: {} }, '@kit.ImageKit': { image: {} },
   '@kit.BasicServicesKit': { deviceInfo: { brand: 'Test' }, pasteboard: {} }
 };
@@ -81,7 +123,13 @@ const cache = new Map();
 function load(file) {
   file = path.resolve(file);
   if (cache.has(file)) return cache.get(file).exports;
-  const source = fs.readFileSync(file, 'utf8');
+  let source = fs.readFileSync(file, 'utf8');
+  if (file.endsWith('/pages/Index.ets')) {
+    // Exercise the actual navigation/scroll controller; ArkUI builders require a device.
+    source = source.slice(0, source.indexOf('  build() {')) + '\n}\n';
+    source = source.replace(/@Entry\s*\n@Component\s*\nstruct Index/, 'export class Index')
+      .replace(/^(\s*)@[^\n]*?private /gm, '$1private ');
+  }
   const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
   const module = { exports: {} }; cache.set(file, module);
   const localRequire = name => {
@@ -428,19 +476,288 @@ async function folders() {
   assert(!restored.messages[0].pendingDelivery);
   const exportRoot = path.join(temporary, 'folder-export'); fs.mkdirSync(exportRoot);
   pickedDirectory = [require('node:url').pathToFileURL(exportRoot).href];
+  const limitedFileUri = new FileUriAdapter(pickedDirectory[0]);
+  assert.equal(limitedFileUri.addSegment, undefined, 'FileUri adapter must not invent URI methods');
+  assert.equal(limitedFileUri.getSegment, undefined, 'FileUri is not a URI runtime subclass');
+  assert.throws(() => limitedFileUri.addSegment('child'), /addSegment/, 'reproduce the real-device missing-method error');
   const savedPath = saved.path;
   await store.exportFile(saved);
   assert.equal(saved.path, ''); assert(saved.savedUri); assert(!fs.existsSync(savedPath));
   assert.equal(fs.readFileSync(path.join(exportRoot, '目录', '文本'), 'utf8'), 'abc');
   assert(fs.statSync(path.join(exportRoot, '目录', '空目录')).isDirectory());
-  collision.name = '目录'; store.error = '';
+  fs.mkdirSync(path.join(exportRoot, path.basename(collision.path))); store.error = '';
   const collisionSource = collision.path;
   await store.exportFile(collision);
   assert.match(store.error, /已存在/); assert.equal(collision.path, collisionSource); assert(fs.existsSync(collisionSource));
   assert.equal(fs.readFileSync(path.join(exportRoot, '目录', '文本'), 'utf8'), 'abc');
+  const preciseName = '一部分待提取的图片 100% #相册';
+  const preciseSource = path.join(temporary, preciseName);
+  fs.mkdirSync(path.join(preciseSource, '子目录', '空目录'), { recursive: true });
+  fs.writeFileSync(path.join(preciseSource, '子目录', '照片.txt'), '中文及特殊字符');
+  const preciseUri = require('node:url').pathToFileURL(preciseSource).href;
+  const nonexistentDestination = require('node:url').pathToFileURL(path.join(temporary, 'missing-destination')).href;
+  await assert.rejects(fsAdapter.copy(preciseUri, nonexistentDestination), error => error.code === 13900020, 'old child-destination call reproduces Invalid argument');
+  const importedStore = createStore('native-folder-copy');
+  await importedStore.stageUri(ASSISTANT_ID, preciseUri);
+  const importedFolder = importedStore.attachments(ASSISTANT_ID)[0];
+  assert.equal(fs.readFileSync(path.join(importedFolder.path, '子目录', '照片.txt'), 'utf8'), '中文及特殊字符');
+  assert(!fs.existsSync(path.join(importedFolder.path, preciseName)), 'import must not double-nest the root');
+  assert(fs.statSync(path.join(importedFolder.path, '子目录', '空目录')).isDirectory());
+  await importedStore.submit(ASSISTANT_ID, '');
+  const importedMessage = importedStore.messages.at(-1);
+  const sourceBeforeFailure = importedMessage.path;
+  const failureDestination = path.join(temporary, 'save-failure'); fs.mkdirSync(failureDestination);
+  pickedDirectory = [require('node:url').pathToFileURL(failureDestination).href];
+  failFolderCopy = true;
+  await importedStore.exportFile(importedMessage);
+  assert.equal(importedMessage.path, sourceBeforeFailure);
+  assert.equal(importedMessage.savedUri, '');
+  assert.equal(fs.readFileSync(path.join(sourceBeforeFailure, '子目录', '照片.txt'), 'utf8'), '中文及特殊字符');
+  assert.match(importedStore.error, /13900028/);
+  const cacheBeforeFailure = fs.readdirSync(path.join(importedStore.root, 'files')).sort();
+  await assert.rejects(importedStore.stageUri(ASSISTANT_ID, preciseUri));
+  assert.deepEqual(fs.readdirSync(path.join(importedStore.root, 'files')).sort(), cacheBeforeFailure, 'failed imports clean their isolated staging tree');
+  failFolderCopy = false;
+  const successDestination = path.join(temporary, '选择保存目录 100% #'); fs.mkdirSync(successDestination);
+  // Use a document-provider authority, not a sandbox URI.
+  const documentUri = new URL(require('node:url').pathToFileURL(successDestination).href);
+  documentUri.hostname = 'docs';
+  pickedDirectory = [documentUri.href];
+  const beforeCopies = copyCalls.length;
+  await Promise.all([importedStore.exportFile(importedMessage), importedStore.exportFile(importedMessage)]);
+  assert.equal(copyCalls.length - beforeCopies, 1, 'repeated taps cannot move the same folder twice');
+  assert.equal(copyCalls.at(-1).destination, documentUri.href, 'the exact picker-granted parent URI is passed to native copy');
+  assert.equal(fs.readFileSync(path.join(successDestination, preciseName, '子目录', '照片.txt'), 'utf8'), '中文及特殊字符');
+  assert(!fs.existsSync(sourceBeforeFailure));
+  assert.equal(importedMessage.path, '');
+  assert.equal(nativePath(importedMessage.savedUri), path.join(successDestination, preciseName));
+  assert.equal(new URL(importedMessage.savedUri).hostname, 'docs');
+  assert(fs.existsSync(preciseSource), 'selected source folders are not removed by import');
   pickedDirectory = [];
+  console.log('PASS native folder copy: FileUri without inherited URI methods, explicit ArkTS URI class, existing-parent contract, original Invalid argument reproduction, no double nesting, Chinese/space/percent/hash names, document-provider URI, partial copy failure keeps source, import cleanup, retry and repeated-tap protection');
   console.log('PASS folders: nested/empty directories and files, collision handling, traversal/duplicate/missing entries, short files, cancellation cleanup, durable offline folder queue, old-client negotiation, folder export and overwrite protection');
 }
+async function scrollNavigation() {
+  global.Edge = { Bottom: 1 }; global.Curve = { EaseOut: 1 };
+  global.Scroller = class {
+    offset = 0; maximum = 9000; calls = [];
+    currentOffset() { return { xOffset: 0, yOffset: this.offset }; }
+    isAtEnd() { return this.offset === this.maximum; }
+    scrollEdge() { this.offset = this.maximum; this.calls.push(this.offset); }
+    scrollTo(options) { this.offset = Math.min(this.maximum, options.yOffset); this.calls.push(this.offset); }
+  };
+  const { Index } = load(`${source}/pages/Index.ets`);
+  const store = createStore('scroll-navigation');
+  const page = new Index(); page.store = store; page.pageActive = true; page.isWide = true;
+  const frames = [];
+  page.getUIContext = () => ({ postFrameCallback: frame => frames.push(frame),
+    getFocusController: () => ({ clearFocus() {} }), animateTo: (options, action) => { action(); options.onFinish?.(); } });
+  const layout = () => { for (let n = 0; frames.length && n < 20; n++) { const batch = frames.splice(0); for (const frame of batch) frame.onIdle(0); } assert.equal(frames.length, 0); };
+  const a = crypto.randomUUID(), b = crypto.randomUUID(), fresh = crypto.randomUUID();
+  store.peers = [a, b, fresh].map(id => ({ id, name: id, online: false }));
+  store.messages = [a, b].flatMap(peer => Array.from({ length: 30 }, (_, index) => ({ id: `${peer}-${index}`, peer, mine: false, text: '历史消息', name: '', unread: false })));
+  store.saveScrollPosition(a, { offset: 375, atBottom: false });
+  store.saveScrollPosition(b, { offset: 875, atBottom: false });
+  assert.equal(createStore('scroll-navigation').scrollPosition(a).offset, 375);
+  page.selectPeer(a); layout(); assert.equal(page.scroller.offset, 375);
+  page.scroller.offset = 520; page.saveScrollPosition();
+  page.selectPeer(b); layout(); assert.equal(page.scroller.offset, 875);
+  page.selectPeer(a); layout(); assert.equal(page.scroller.offset, 520);
+  const before = page.scroller.calls.length;
+  store.messages.push({ id: 'visible-new', peer: a, mine: false, text: '新消息', name: '', unread: false });
+  page.updateState(); layout(); assert.equal(page.scroller.calls.length, before, 'reading older messages does not jump');
+  page.selectPeer(b); layout();
+  store.messages.find(m => m.peer === a).unread = true;
+  page.selectPeer(a); layout(); assert.equal(page.scroller.offset, page.scroller.maximum);
+  assert.equal(store.unreadCount(a), 0, 'unread captured before badge clears');
+  page.scroller.offset = 650; page.followLatest = false; page.saveScrollPosition();
+  page.changeHistoryQuery('查找'); page.scroller.offset = 10;
+  page.changeHistoryQuery(''); layout(); assert.equal(page.scroller.offset, 650, 'search does not overwrite reading bookmark');
+  page.selectPeer(b); page.selectPeer(a); layout(); assert.equal(page.scroller.offset, 650, 'stale frame callback cannot scroll another contact');
+  page.scrollToLatest(); layout(); assert.equal(page.scroller.offset, page.scroller.maximum);
+  assert.equal(store.scrollPosition(a).atBottom, true);
+  page.selectPeer(fresh); layout(); assert.equal(page.scroller.offset, page.scroller.maximum, 'first visit starts at latest');
+  page.selectPeer(b); layout(); page.scroller.offset = 432;
+  page.goBack(); layout(); assert.equal(page.selected, ''); assert.equal(store.scrollPosition(b).offset, 432);
+  store.requestedPeer = a; store.messages.find(m => m.peer === a).unread = true;
+  page.updateState(); layout(); assert.equal(page.selected, a); assert.equal(page.scroller.offset, page.scroller.maximum);
+  store.saveScrollPosition(a, { offset: -1, atBottom: false }); assert(store.scrollPosition(a).offset >= 0);
+  console.log('PASS scroll controller: per-contact persistence/restart, unread-before-markRead, first visit, exact offset restore, search isolation, latest action, no forced jump while reading, fast contact switches, back navigation and notification entry (Node UI adapter)');
+}
+async function networkRecovery() {
+  const { LanNetwork } = load(`${source}/network/LanNetwork.ets`);
+  const native = { servers: [], discoveries: [], clients: [], registrations: new Map(), removed: [],
+    failAdd: 0, failRemove: 0, skipStart: 0, nextListen: undefined, resolveHook: undefined, remotes: [] };
+  class Events {
+    handlers = new Map();
+    on(event, callback) { this.handlers.set(event, callback); }
+    off(event) { this.handlers.delete(event); }
+    emit(event, value) { this.handlers.get(event)?.(value); }
+  }
+  class Server extends Events {
+    closed = false;
+    constructor() { super(); this.port = 20000 + native.servers.length; native.servers.push(this); }
+    async listen() { if (native.nextListen) { const task = native.nextListen; native.nextListen = undefined; await task; } }
+    async getLocalAddress() { return { address: '0.0.0.0', port: this.port }; }
+    async close() { this.closed = true; }
+  }
+  class Discovery extends Events {
+    stopped = false;
+    constructor() { super(); native.discoveries.push(this); }
+    startSearchingMDNS() {
+      if (native.skipStart > 0) { native.skipStart--; return; }
+      this.emit('discoveryStart', { errorCode: 0 });
+      for (const service of native.remotes) this.emit('serviceFound', service);
+    }
+    stopSearchingMDNS() { this.stopped = true; this.emit('discoveryStop', { errorCode: 0 }); }
+  }
+  class Client extends Events {
+    closed = false; silent = false;
+    constructor() { super(); native.clients.push(this); }
+    async bind() {}
+    async connect(options) { this.port = options.address.port; }
+    async send({data}) {
+      if (this.closed) throw new Error('socket closed');
+      if (this.silent) return;
+      for (const packet of new Framer().append(data)) {
+        const reply = packet.kind === 'hello' ? Object.assign(new Packet('hello'), {
+          sender: native.remotes.find(service => service.port === this.port)?.serviceName, supportsHeartbeat: true
+        }) : packet.kind === 'ping' ? new Packet('pong', packet.id) : undefined;
+        if (reply) queueMicrotask(() => { if (!this.closed) this.emit('message', { message: encodePacket(reply) }); });
+      }
+    }
+    async close() { if (!this.closed) { this.closed = true; queueMicrotask(() => this.emit('close')); } }
+  }
+  const socketKit = kits['@kit.NetworkKit'].socket, mdnsKit = kits['@kit.NetworkKit'].mdns;
+  socketKit.constructTCPSocketServerInstance = () => new Server();
+  socketKit.constructTCPSocketInstance = () => new Client();
+  mdnsKit.addLocalService = async (_, service) => {
+    if (native.failAdd > 0) { native.failAdd--; throw new Error('mDNS unavailable after resume'); }
+    if (native.registrations.has(service.serviceName)) throw new Error('service already registered');
+    const value = { ...service }; native.registrations.set(value.serviceName, value); return value;
+  };
+  mdnsKit.removeLocalService = async (_, service) => {
+    if (native.failRemove > 0) { native.failRemove--; throw new Error('mDNS remove unavailable'); }
+    const current = native.registrations.get(service.serviceName);
+    if (current && current.port !== service.port) throw new Error('obsolete service port');
+    native.removed.push(service); native.registrations.delete(service.serviceName);
+  };
+  mdnsKit.createDiscoveryService = () => new Discovery();
+  mdnsKit.resolveLocalService = async (_, service) => native.resolveHook ? native.resolveHook(service) : { ...service, host: { address: '127.0.0.1' } };
+  const deviceId = crypto.randomUUID(), remote = { serviceName: crypto.randomUUID(), serviceType: '_lanternchat._tcp', port: 30100 };
+  native.remotes.push(remote);
+  const network = new LanNetwork({}, deviceId, () => Object.assign(new Packet('hello'), { sender: deviceId, supportsHeartbeat: true }));
+  network.operationTimeout = 80; network.cleanupTimeout = 20;
+  const states = [], closed = [];
+  network.onState = (ready, detail) => states.push({ ready, detail });
+  network.onClose = channel => closed.push(channel.id);
+  network.onPacket = async (packet, channel) => {
+    if (packet.kind === 'hello') { channel.peer = packet.sender; channel.heartbeat = packet.supportsHeartbeat === true; }
+    if (packet.kind === 'ping') await channel.send(new Packet('pong', packet.id));
+  };
+  const retry = async () => {
+    network.retryAt = 0; network.tick();
+    await wait(() => network.resourcesReady && !network.starting && !network.recoveryQueued, 'automatic network recovery');
+  };
+  try {
+    await Promise.all([network.start(), network.start()]);
+    assert.equal(native.servers.length, 1, 'concurrent start calls share a listener');
+    assert(network.resourcesReady); assert.equal(states.at(-1).ready, true, 'errorCode zero is success');
+    await wait(() => network.channelFor(remote.serviceName), 'initial mDNS/TCP handshake');
+    const healthy = network.channelFor(remote.serviceName);
+    const firstServer = native.servers.at(-1), firstDiscovery = native.discoveries.at(-1);
+    const staleFound = firstDiscovery.handlers.get('serviceFound');
+    const staleAccept = firstServer.handlers.get('connect');
+    await network.resume();
+    await wait(() => healthy.resumeProbeDeadline === 0, 'foreground ping receives pong');
+    assert.equal(network.channelFor(remote.serviceName), healthy, 'healthy TCP sessions survive resource recovery');
+    assert(firstServer.closed); assert(firstDiscovery.stopped);
+    assert.notEqual(native.servers.at(-1).port, firstServer.port);
+    assert.equal(native.registrations.get(deviceId).port, native.servers.at(-1).port, 'fresh listening port is advertised for Mac');
+    const phantom = { serviceName: crypto.randomUUID(), serviceType: remote.serviceType, port: 30101 };
+    staleFound(phantom); assert(!network.found.has(phantom.serviceName), 'stale discovery callbacks are ignored');
+    let staleConnectionClosed = false;
+    staleAccept({ close: async () => { staleConnectionClosed = true; } });
+    assert(staleConnectionClosed, 'an old listener cannot accept a new channel');
+    // A retained socket can silently die in background without close/error events.
+    healthy.client.silent = true; healthy.lastSeen = Date.now() - 120000;
+    await network.resume(); network.tick();
+    assert(network.channels.includes(healthy), 'foreground probe grants a response grace period');
+    healthy.resumeProbeDeadline = Date.now() - 1; network.tick();
+    await wait(() => network.channelFor(remote.serviceName) && network.channelFor(remote.serviceName) !== healthy, 'silent background socket reconnects');
+    assert.equal(closed.filter(id => id === healthy.id).length, 1);
+    // Old async resolutions must not clear a newer attempt for the same peer.
+    const slow = { serviceName: crypto.randomUUID(), serviceType: remote.serviceType, port: 30102 };
+    native.remotes.push(slow);
+    let resolveOld, resolveNew, resolutions = 0;
+    native.resolveHook = service => service.serviceName !== slow.serviceName ? Promise.resolve({ ...service, host: { address: '127.0.0.1' } }) :
+      new Promise(resolve => { if (++resolutions === 1) resolveOld = resolve; else resolveNew = resolve; });
+    network.discovery.emit('serviceFound', slow);
+    await wait(() => resolveOld, 'old slow resolution');
+    await network.resume(); await wait(() => resolveNew, 'fresh slow resolution');
+    resolveOld({ ...slow, host: { address: '127.0.0.1' } }); await delay(0);
+    assert(network.connecting.has(slow.serviceName), 'old resolution cannot erase the new generation attempt');
+    resolveNew({ ...slow, host: { address: '127.0.0.1' } });
+    await wait(() => network.channelFor(slow.serviceName), 'new generation connects');
+    native.resolveHook = undefined;
+    network.server.emit('error', new Error('listener invalidated in background'));
+    assert(!network.resourcesReady); await retry();
+    network.discovery.emit('discoveryStop', { errorCode: 1 });
+    assert(!network.resourcesReady); await retry();
+    // Failed unregisters need to be retried, otherwise a stale advertisement
+    // prevents registering this same stable device ID indefinitely.
+    native.failRemove = 2;
+    await network.resume(); assert(!network.resourcesReady); assert(network.staleRegistrations.length > 0);
+    await retry(); assert.equal(network.staleRegistrations.length, 0);
+    network.rememberStaleRegistration({ ...network.registered, port: firstServer.port });
+    await network.resume();
+    assert(network.resourcesReady, 'cleanup uses the latest advertisement port, not stale metadata');
+    native.failAdd = 1;
+    await network.resume(); assert(!network.resourcesReady);
+    await retry();
+    native.skipStart = 1;
+    await network.resume(); assert(!network.resourcesReady, 'missing discovery-start event is bounded, not falsely ready');
+    await retry();
+    // An old resolver that never completes cannot permanently block retries.
+    const hanging = { serviceName: crypto.randomUUID(), serviceType: remote.serviceType, port: 30103 };
+    native.remotes.push(hanging);
+    let hangOnce = true;
+    native.resolveHook = service => service.serviceName === hanging.serviceName && hangOnce ?
+      (hangOnce = false, new Promise(() => {})) : Promise.resolve({ ...service, host: { address: '127.0.0.1' } });
+    network.discovery.emit('serviceFound', hanging);
+    await wait(() => !network.connecting.has(hanging.serviceName), 'stuck resolver times out');
+    network.tick(); await wait(() => network.channelFor(hanging.serviceName), 'resolution retries after timeout');
+    native.resolveHook = undefined;
+    let finishListen;
+    native.nextListen = new Promise(resolve => { finishListen = resolve; });
+    const serverCount = native.servers.length;
+    const resuming = network.resume();
+    await wait(() => native.servers.length > serverCount, 'pending foreground startup');
+    const stopping = network.stop(); finishListen();
+    await Promise.all([resuming, stopping]);
+    assert(!network.active); assert.equal(network.channels.length, 0); assert.equal(native.registrations.size, 0);
+    const stoppedCount = native.servers.length; network.tick(); await delay(0);
+    assert.equal(native.servers.length, stoppedCount, 'stop cancels pending startup and automatic retries');
+    await network.start(); assert(network.resourcesReady, 'explicit start after stop can recover again');
+    console.log('PASS network recovery: concurrent start serialization, foreground listener/advertisement/browser recreation, zero discovery error code, live-session probe, silent socket reconnect, stale callbacks/resolves, listener/browser failures, unregister/add failures, bounded discovery/resolve waits, stop/start cancellation');
+  } finally { await network.stop(); }
+  // Run the actual Ability callbacks against a lifecycle recorder.
+  kits['@kit.AbilityKit'] = { UIAbility: class {} };
+  kits['@kit.NotificationKit'] = { notificationManager: {} };
+  kits['@kit.PerformanceAnalysisKit'].hilog.info = () => {};
+  const { default: EntryAbility } = load(`${source}/entryability/EntryAbility.ets`);
+  const lifecycleCalls = [];
+  const originalShared = ChatStore.shared;
+  ChatStore.shared = () => ({ setForeground: value => lifecycleCalls.push(value ? 'foreground' : 'background'),
+    start: () => lifecycleCalls.push('start'), resumeNetwork: () => lifecycleCalls.push('resume'), refresh: () => lifecycleCalls.push('refresh') });
+  try {
+    const ability = new EntryAbility();
+    ability.onForeground(); ability.onBackground(); ability.onForeground(); ability.onForeground();
+    assert.deepEqual(lifecycleCalls, ['foreground', 'start', 'background', 'foreground', 'resume', 'foreground', 'start']);
+    console.log('PASS Ability lifecycle: first foreground starts once; returning from background resumes network; no start/refresh race');
+  } finally { ChatStore.shared = originalShared; }
+}
+
 async function interop() {
   const macRoot=process.env.LANCHAT_MAC_SOURCE || '/Users/sunshine/SwiftProjects/local-chat';
   if (!fs.existsSync(path.join(macRoot,'Sources/LanChat/ChatStore.swift'))) throw new Error('Set LANCHAT_MAC_SOURCE to Mac project for interoperability test');
@@ -492,6 +809,6 @@ async function interop() {
   } finally { mac.kill(); }
 }
 (async()=>{
-  try { await core(); await attachmentOnly(); await incomingShare(); await offlineDelivery(); await folders(); await interop(); }
+  try { await core(); await attachmentOnly(); await incomingShare(); await offlineDelivery(); await folders(); await scrollNavigation(); await networkRecovery(); await interop(); }
   finally { for(const store of stores) await store.stop(); fs.rmSync(temporary,{recursive:true,force:true}); }
 })().catch(error=>{console.error(error);process.exitCode=1;});

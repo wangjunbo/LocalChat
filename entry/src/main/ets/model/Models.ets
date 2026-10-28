@@ -1,4 +1,4 @@
-export const APP_VERSION: string = '1.0.31';
+export const APP_VERSION: string = '1.0.36';
 export const ASSISTANT_ID: string = 'local-assistant';
 export class Peer {
   id: string = '';
@@ -60,4 +60,9 @@ export class IncomingShare {
   id: string = '';
   files: Attachment[] = [];
   text: string = '';
+}
+
+export class HistoryScrollPosition {
+  offset: number = 0;
+  atBottom: boolean = true;
 }

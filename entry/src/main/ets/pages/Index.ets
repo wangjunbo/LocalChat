@@ -3,7 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { fileUri } from '@kit.CoreFileKit';
 import { ChatStore } from '../store/ChatStore';
-import { Peer, Message, Attachment, IncomingShare, APP_VERSION, ASSISTANT_ID, isImage, sizeLabel, formatMessageDate } from '../model/Models';
+import { Peer, Message, Attachment, IncomingShare, HistoryScrollPosition, APP_VERSION, ASSISTANT_ID, isImage, sizeLabel, formatMessageDate } from '../model/Models';
 
 // onIdle runs after this frame's layout/draw, so the new message has its final height.
 class AfterChatLayout extends FrameCallback {
@@ -55,6 +55,8 @@ struct Index {
   @State private submitting: boolean = false;
   private composerFocused: boolean = false;
   private followLatest: boolean = true;
+  private restoringScroll: boolean = false;
+  private pendingScrollPosition?: HistoryScrollPosition;
   private pageActive: boolean = false;
   private scrollGeneration: number = 0;
   private store?: ChatStore;
@@ -72,7 +74,7 @@ struct Index {
     this.updateState();
     this.store.start();
   }
-  aboutToDisappear(): void { this.pageActive = false; this.scrollGeneration++; if (this.store) { this.store.onChange = () => {}; } }
+  aboutToDisappear(): void { this.saveScrollPosition(); this.pageActive = false; this.scrollGeneration++; if (this.store) { this.store.onChange = () => {}; } }
   onBackPress(): boolean {
     if (this.state.shares.length || this.state.importingShares > 0) {
       if (!this.shareSending && this.state.shares.length) { this.store?.cancelShare(this.state.shares[0].id); }
@@ -95,13 +97,15 @@ struct Index {
   }
   private updateState(): void {
     if (!this.store) { return; }
+    let openedFromNotification = false;
     if (this.store.requestedPeer) {
+      this.prepareConversation(this.store.requestedPeer);
       this.selected = this.store.requestedPeer;
+      openedFromNotification = true;
       this.store.requestedPeer = '';
       this.store.activePeer = this.selected;
       this.draft = ''; this.historyQuery = '';
       this.store.markRead(this.selected);
-      this.scrollToLatest();
     }
     const previousCount = this.state.messages.filter((item: Message) => item.peer === this.selected).length;
     const state = new ViewState();
@@ -120,19 +124,60 @@ struct Index {
     state.name = this.store.name; state.ready = this.store.ready;
     state.networkStatus = this.store.networkStatus; state.notice = this.store.notice; state.error = this.store.error;
     this.state = state;
-    if (this.selected && !this.historyQuery && state.messages.filter((item: Message) => item.peer === this.selected).length > previousCount) {
-      if (this.followLatest || this.composerFocused) { this.scrollToLatest(); }
+    if (openedFromNotification) { this.restoreConversationPosition(); }
+    if (!this.restoringScroll && this.selected && !this.historyQuery && state.messages.filter((item: Message) => item.peer === this.selected).length > previousCount) {
+      if (this.followLatest) { this.scrollToLatest(); }
     }
   }
-  private scrollToLatest(): void {
-    if (!this.pageActive || !this.selected || this.historyQuery) { return; }
+  private saveScrollPosition(): void {
+    if (!this.selected || this.restoringScroll || this.historyQuery || !this.store) { return; }
+    const position = new HistoryScrollPosition();
+    position.offset = Math.max(0, this.scroller.currentOffset().yOffset);
+    position.atBottom = this.scroller.isAtEnd();
+    this.store.saveScrollPosition(this.selected, position);
+  }
+  private prepareConversation(peer: string): void {
+    this.saveScrollPosition();
+    this.scrollGeneration++;
+    // Capture unread before markRead clears the badge.
+    this.pendingScrollPosition = (this.store?.unreadCount(peer) || 0) > 0 ? undefined : this.store?.scrollPosition(peer);
+    this.followLatest = this.pendingScrollPosition?.atBottom ?? true;
+    this.restoringScroll = true;
+  }
+  private restoreConversationPosition(): void {
+    if (!this.pageActive || !this.selected || this.historyQuery || !this.restoringScroll) { return; }
     const peer = this.selected;
+    const position = this.pendingScrollPosition;
     const generation = ++this.scrollGeneration;
     this.getUIContext().postFrameCallback(new AfterChatLayout((): void => {
       if (!this.pageActive || generation !== this.scrollGeneration || this.selected !== peer || this.historyQuery) { return; }
-      this.scroller.scrollEdge(Edge.Bottom);
-      this.followLatest = true;
+      if (!position || position.atBottom) { this.scroller.scrollEdge(Edge.Bottom); }
+      else { this.scroller.scrollTo({ xOffset: 0, yOffset: position.offset, animation: false }); }
+      this.getUIContext().postFrameCallback(new AfterChatLayout((): void => {
+        if (!this.pageActive || generation !== this.scrollGeneration || this.selected !== peer || this.historyQuery) { return; }
+        this.restoringScroll = false;
+        this.followLatest = this.scroller.isAtEnd();
+        this.saveScrollPosition();
+      }));
     }));
+  }
+  private scrollToLatest(): void {
+    if (!this.pageActive || !this.selected || this.historyQuery) { return; }
+    this.pendingScrollPosition = undefined;
+    this.followLatest = true;
+    this.restoringScroll = true;
+    this.restoreConversationPosition();
+  }
+  private changeHistoryQuery(value: string): void {
+    if (!this.historyQuery) { this.saveScrollPosition(); }
+    this.scrollGeneration++;
+    this.restoringScroll = false;
+    this.historyQuery = value;
+    if (!value) {
+      this.pendingScrollPosition = this.store?.scrollPosition(this.selected);
+      this.restoringScroll = true;
+      this.restoreConversationPosition();
+    }
   }
   private visibleMessages(): Message[] {
     return this.state.messages.filter((message: Message) => message.peer === this.selected &&
@@ -141,6 +186,8 @@ struct Index {
   private goBack(): void {
     if (this.opening) { this.backAfterOpening = true; return; }
     if (this.returning || !this.selected) { return; }
+    this.saveScrollPosition();
+    this.restoringScroll = true;
     this.scrollGeneration++;
     if (this.store) { this.store.activePeer = ''; }
     this.composerFocused = false;
@@ -166,8 +213,7 @@ struct Index {
   private selectPeer(id: string): void {
     if (this.opening || this.returning) { return; }
     if (this.selected && !this.isWide) { return; }
-    this.scrollGeneration++;
-    this.followLatest = true;
+    this.prepareConversation(id);
     if (this.isWide) {
       this.entering = false;
       this.selected = id;
@@ -175,7 +221,7 @@ struct Index {
       this.draft = '';
       this.historyQuery = '';
       this.updateState();
-      this.scrollToLatest();
+      this.restoreConversationPosition();
       return;
     }
     this.entering = true;
@@ -186,6 +232,7 @@ struct Index {
     this.draft = '';
     this.historyQuery = '';
     this.updateState();
+    this.restoreConversationPosition();
     // Mount and lay out the chat off-screen before animating both pages together.
     this.getUIContext().postFrameCallback(new AfterChatLayout((): void => {
       if (!this.pageActive || this.selected !== id) { this.opening = false; return; }
@@ -596,21 +643,28 @@ struct Index {
     Column({ space: 0 }) {
       TextInput({ text: this.historyQuery, placeholder: '查找当前对话的文字或文件名' }).fontSize(12).height(36)
         .backgroundColor(Color.White).borderRadius(4).margin({ top: 8, left: 12, right: 12, bottom: 6 })
-        .onChange((value: string) => { this.historyQuery = value; })
-      List({ space: 16, scroller: this.scroller }) {
-        ForEach(this.visibleMessages(), (message: Message) => {
-          ListItem() { this.messageBubble(message); }
-        }, (message: Message) => `${message.id}-${message.status}-${message.transferred}-${message.path}`)
-      }.layoutWeight(1).width('100%').padding({ left: 14, right: 14, top: 12, bottom: 12 })
-        .onAppear(() => this.scrollToLatest())
-        .onAreaChange((oldArea: Area, newArea: Area) => {
-          if (oldArea.height !== newArea.height && (this.composerFocused || this.followLatest)) {
-            this.scrollToLatest();
-          }
-        })
-        .onScrollIndex((_first: number, last: number) => {
-          this.followLatest = last >= this.visibleMessages().length - 1;
-        })
+        .onChange((value: string) => this.changeHistoryQuery(value))
+      Stack({ alignContent: Alignment.BottomEnd }) {
+        List({ space: 16, scroller: this.scroller }) {
+          ForEach(this.visibleMessages(), (message: Message) => {
+            ListItem() { this.messageBubble(message); }
+          }, (message: Message) => `${message.id}-${message.status}-${message.transferred}-${message.path}`)
+        }.width('100%').height('100%').padding({ left: 14, right: 14, top: 12, bottom: 50 })
+          .onAppear(() => this.restoreConversationPosition())
+          .onAreaChange((oldArea: Area, newArea: Area) => {
+            if (oldArea.height !== newArea.height && this.followLatest && !this.restoringScroll) {
+              this.scrollToLatest();
+            }
+          })
+          .onDidScroll(() => {
+            if (!this.restoringScroll && !this.historyQuery) { this.followLatest = this.scroller.isAtEnd(); }
+          })
+          .onScrollStop(() => this.saveScrollPosition())
+        Button('↓ 回到最新').height(30).fontSize(12).fontColor(BLUE).type(ButtonType.Normal)
+          .backgroundColor(Color.White).borderRadius(4).border({ width: 0.5, color: '#D8E2EA' })
+          .margin({ right: 12, bottom: 10 })
+          .onClick(() => { this.historyQuery = ''; this.scrollToLatest(); })
+      }.layoutWeight(1).width('100%')
       this.composer()
     }.layoutWeight(1).width('100%')
   }
@@ -708,7 +762,7 @@ struct Index {
             .minLines(1).maxLines(5).constraintSize({ minHeight: 38, maxHeight: 118 })
             .padding({ left: 10, right: 10, top: 9, bottom: 9 }).fontSize(14).borderRadius(5).backgroundColor(Color.Transparent).width('100%')
             .onChange((value: string) => { this.draft = value; })
-            .onFocus(() => { this.composerFocused = true; this.scrollToLatest(); })
+            .onFocus(() => { this.composerFocused = true; })
             .onBlur(() => { this.composerFocused = false; })
         }.layoutWeight(1).borderRadius(5).backgroundColor('#F2F5F8')
         Button(this.selected === ASSISTANT_ID ? '保存' : '发送').type(ButtonType.Normal).borderRadius(5)

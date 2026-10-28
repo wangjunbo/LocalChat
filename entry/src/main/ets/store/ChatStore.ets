@@ -5,13 +5,13 @@ import { common, Want } from '@kit.AbilityKit';
 import { preferences, uniformTypeDescriptor } from '@kit.ArkData';
 import { fileIo as fs, picker, fileUri } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
-import { util } from '@kit.ArkTS';
+import { util, uri } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { deviceInfo, BusinessError } from '@kit.BasicServicesKit';
 import { Packet, CHUNK_SIZE, messageDate } from '../network/Wire';
 import { Channel, LanNetwork } from '../network/LanNetwork';
-import { Peer, Message, Archive, Attachment, IncomingShare, ASSISTANT_ID } from '../model/Models';
+import { Peer, Message, Archive, Attachment, IncomingShare, HistoryScrollPosition, ASSISTANT_ID } from '../model/Models';
 
 class Transfer {
   isDirectory: boolean = false;
@@ -58,6 +58,23 @@ export class ChatStore {
   unreadCount(peer: string = ''): number {
     return this.messages.filter((item: Message) => !item.mine && item.unread === true && (!peer || item.peer === peer)).length;
   }
+  scrollPosition(peer: string): HistoryScrollPosition | undefined {
+    try {
+      const positions = JSON.parse(this.prefs.getSync('conversationScrollPositions.v1', '{}') as string) as Record<string, HistoryScrollPosition>;
+      const position = positions[peer];
+      if (position && Number.isFinite(position.offset) && position.offset >= 0 && typeof position.atBottom === 'boolean') { return position; }
+    } catch (_) {}
+    return undefined;
+  }
+  saveScrollPosition(peer: string, position: HistoryScrollPosition): void {
+    if (!peer || !Number.isFinite(position.offset) || position.offset < 0) { return; }
+    try {
+      const positions = JSON.parse(this.prefs.getSync('conversationScrollPositions.v1', '{}') as string) as Record<string, HistoryScrollPosition>;
+      positions[peer] = position;
+      this.prefs.putSync('conversationScrollPositions.v1', JSON.stringify(positions));
+      this.prefs.flush().catch(() => {});
+    } catch (_) {}
+  }
   markRead(peer: string): void {
     if (!peer || this.unreadCount(peer) === 0) { return; }
     this.messages.forEach((item: Message) => { if (item.peer === peer) { item.unread = false; } });
@@ -82,6 +99,7 @@ export class ChatStore {
   private lastTextAttempt: Map<string, number> = new Map();
   private incoming: Map<string, Transfer> = new Map();
   private outgoing: Map<string, Transfer> = new Map();
+  private exportingFiles: Set<string> = new Set();
   private archiveWritable: boolean = true;
   private persistTimer: number = -1;
   private timeoutTimer: number = -1;
@@ -112,6 +130,10 @@ export class ChatStore {
   }
   start(): void {
     this.network.start();
+    if (this.timeoutTimer === -1) { this.timeoutTimer = setInterval(() => this.checkTransfers(), 5000); }
+  }
+  resumeNetwork(): void {
+    this.network.resume();
     if (this.timeoutTimer === -1) { this.timeoutTimer = setInterval(() => this.checkTransfers(), 5000); }
   }
   async stop(): Promise<void> {
@@ -209,13 +231,12 @@ export class ChatStore {
       if (!stat.isFile() && !stat.isDirectory()) { throw new Error('请选择普通文件或文件夹'); }
       file.id = util.generateRandomUUID();
       file.name = this.safeName(new fileUri.FileUri(uri).name || '文件');
-      file.path = this.availableFilePath(file.name);
-      file.name = file.path.substring(file.path.lastIndexOf('/') + 1);
       file.isDirectory = stat.isDirectory();
       if (file.isDirectory) {
-        await fs.copy(uri.startsWith('file://') ? uri : fileUri.getUriFromPath(uri), fileUri.getUriFromPath(file.path));
-        file.size = new FolderPlan(file.path).bytes;
+        await this.importFolder(uri, file);
       } else {
+        file.path = this.availableFilePath(file.name);
+        file.name = file.path.substring(file.path.lastIndexOf('/') + 1);
         file.size = stat.size;
         await fs.copyFile(source.fd, file.path);
       }
@@ -224,6 +245,22 @@ export class ChatStore {
       if (file.path) { try { removeTree(file.path); } catch (_) {} }
       throw new Error((error as Error).message);
     } finally { fs.closeSync(source); }
+  }
+  private async importFolder(uri: string, file: Attachment): Promise<void> {
+    const sourceUri = uri.startsWith('file://') ? uri : fileUri.getUriFromPath(uri);
+    const sourceName = new fileUri.FileUri(sourceUri).name;
+    if (!sourceName || sourceName === '.' || sourceName === '..' || sourceName.includes('/')) { throw new Error('无效的文件夹名称'); }
+    const staging = `${this.root}/files/.import-${util.generateRandomUUID()}`;
+    fs.mkdirSync(staging);
+    try {
+      // Native copy requires an existing parent and creates parent/sourceName.
+      await fs.copy(sourceUri, fileUri.getUriFromPath(staging));
+      const imported = `${staging}/${sourceName}`;
+      const plan = new FolderPlan(imported);
+      const target = this.availableFilePath(file.name);
+      fs.renameSync(imported, target);
+      file.path = target; file.name = target.substring(target.lastIndexOf('/') + 1); file.size = plan.bytes;
+    } finally { try { removeTree(staging); } catch (_) {} }
   }
   receiveShare(want: Want): Promise<void> {
     this.importingShares++;
@@ -306,6 +343,9 @@ export class ChatStore {
     const message = this.messages.find((item: Message) => item.id === selected.id && item.peer === selected.peer);
     if (!message) { return; }
     if (!message.path) { return; }
+    const key = `${message.peer}:${message.id}`;
+    if (this.exportingFiles.has(key)) { return; }
+    this.exportingFiles.add(key);
     try {
       if (message.isDirectory) { await this.exportFolder(message); return; }
       const documentPicker = new picker.DocumentViewPicker(this.context);
@@ -322,19 +362,32 @@ export class ChatStore {
       this.notice = '已移动到所选位置';
       if (!this.persist()) { this.report('文件已移动，但聊天记录保存失败'); return; }
       this.changed();
-    } catch (error) { this.report(`移动失败：${(error as Error).message}`); }
+    } catch (error) {
+      const code = (error as BusinessError).code;
+      this.report(`移动失败：${(error as Error).message}${code ? `（错误码 ${code}）` : ''}`);
+    } finally { this.exportingFiles.delete(key); }
   }
   private async exportFolder(message: Message): Promise<void> {
     const documentPicker = new picker.DocumentViewPicker(this.context);
     const targets = await documentPicker.select({ maxSelectNumber: 1, selectMode: picker.DocumentSelectMode.FOLDER });
     if (!targets.length) { return; }
-    const target = targets[0].replace(/\/$/, '') + '/' + encodeURIComponent(message.name);
-    // copy() overwrites by design; refuse existing destinations before using it.
-    try { fs.lstatSync(target); throw new Error('目标文件夹已存在，请选择其他位置或先重命名'); }
+    const sourcePath = message.path;
+    const sourceUri = fileUri.getUriFromPath(sourcePath);
+    const sourceName = new fileUri.FileUri(sourceUri).name;
+    // FileUri's native runtime object does not provide the URI methods declared
+    // by its SDK base type. Use the actual ArkTS URI class for path operations.
+    const destination = new uri.URI(targets[0]);
+    const target = destination.addSegment(sourceName);
+    // Check the decoded filesystem path: probing a fabricated, missing document
+    // URI can fail during URI resolution instead of reporting ENOENT.
+    const targetPath = '/' + target.getSegment().join('/');
+    try { fs.lstatSync(targetPath); throw new Error('目标文件夹已存在，请选择其他位置或先重命名'); }
     catch (error) { if ((error as BusinessError).code !== 13900002) { throw new Error((error as Error).message); } }
-    await fs.copy(fileUri.getUriFromPath(message.path), target);
-    removeTree(message.path);
-    message.savedUri = target; message.path = ''; message.status = '已移至所选目录';
+    // Pass the picker-granted, existing PARENT URI unchanged. Native copy adds
+    // the source basename itself; a nonexistent child URI returns EINVAL.
+    await fs.copy(sourceUri, targets[0]);
+    removeTree(sourcePath);
+    message.savedUri = target.toString(); message.name = sourceName; message.path = ''; message.status = '已移至所选目录';
     this.notice = '文件夹已移动到所选位置'; this.changed();
     if (!this.persist()) { this.report('文件夹已移动，但聊天记录保存失败'); }
   }

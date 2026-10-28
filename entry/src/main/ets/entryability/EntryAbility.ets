@@ -8,6 +8,7 @@ const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
   private notifications?: MessageNotifications;
+  private returnedFromBackground: boolean = false;
   private mainWindow?: window.Window;
   private readonly onAvoidAreaChange = (_options: window.AvoidAreaOptions): void => {
     this.updateSafeArea();
@@ -93,13 +94,16 @@ export default class EntryAbility extends UIAbility {
   }
 
   onForeground(): void {
-    ChatStore.shared(this.context).setForeground(true);
-    // Ability has brought to foreground
-    ChatStore.shared(this.context).start();
-    ChatStore.shared(this.context).refresh();
+    const store = ChatStore.shared(this.context);
+    store.setForeground(true);
+    if (this.returnedFromBackground) {
+      this.returnedFromBackground = false;
+      store.resumeNetwork();
+    } else { store.start(); }
   }
 
   onBackground(): void {
+    this.returnedFromBackground = true;
     ChatStore.shared(this.context).setForeground(false);
     // Ability has back to background
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
