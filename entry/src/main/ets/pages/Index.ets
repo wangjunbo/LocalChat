@@ -726,16 +726,15 @@ struct Index {
   @Builder
   private composer() {
     Column({ space: 4 }) {
-      // Wrap toolbar items when their intrinsic widths exceed the available space.
-      Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {
+      Row() {
         Button('图片').height(30).fontSize(13).fontColor(BLUE).type(ButtonType.Normal).backgroundColor(Color.Transparent)
-          .padding({ left: 10, right: 10 }).margin({ right: 8, bottom: 4 })
+          .padding({ left: 0, right: 0 }).layoutWeight(1)
           .onClick(() => this.store?.chooseImages(this.selected))
         Button('文件').height(30).fontSize(13).fontColor(BLUE).type(ButtonType.Normal).backgroundColor(Color.Transparent)
-          .padding({ left: 10, right: 10 }).margin({ right: 8, bottom: 4 })
+          .padding({ left: 0, right: 0 }).layoutWeight(1)
           .onClick(() => this.store?.chooseFiles(this.selected))
         Button('文件夹').height(30).fontSize(13).fontColor(BLUE).type(ButtonType.Normal).backgroundColor(Color.Transparent)
-          .padding({ left: 10, right: 10 }).margin({ right: 8, bottom: 4 })
+          .padding({ left: 0, right: 0 }).layoutWeight(1)
           .onClick(() => this.store?.chooseFolder(this.selected))
         Row() {
           PasteButton({ icon: PasteIconStyle.LINES, text: PasteDescription.PASTE, buttonType: ButtonType.Normal }).fontSize(12)
@@ -745,9 +744,7 @@ struct Index {
                 this.store?.pasteImage(peer).then((text: string) => { if (this.selected === peer) { this.draft += text; } });
               }
             })
-        }.margin({ right: 8, bottom: 4 })
-        Text(this.selected === ASSISTANT_ID ? '仅本机' : '局域网直传').fontSize(10).fontColor(MUTED)
-          .margin({ bottom: 4 })
+        }.layoutWeight(1).justifyContent(FlexAlign.Center)
       }.width('100%')
       Row({ space: 8 }) {
         Column({ space: 0 }) {
