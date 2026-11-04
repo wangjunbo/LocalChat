@@ -480,6 +480,7 @@ struct Index {
       Column({ space: 16 }) {
         Text('重命名文件').fontSize(18).fontWeight(FontWeight.Medium).fontColor(INK)
         TextInput({ text: this.newFileName })
+          .fontColor(INK).placeholderColor(MUTED).caretColor(BLUE).backgroundColor('#F2F5F8')
           .fontSize(15).height(44).borderRadius(6)
           .onChange((value: string) => { this.newFileName = value; })
           .width('100%')
@@ -532,6 +533,7 @@ struct Index {
           .accessibilityText('刷新附近设备')
       }.width('100%')
       TextInput({ text: this.query, placeholder: '搜索附近设备' }).height(38).fontSize(14)
+        .fontColor(INK).placeholderColor(MUTED).caretColor(BLUE)
         .backgroundColor('#FFFFFF').borderRadius(5).onChange((value: string) => { this.query = value; })
     }.padding({ left: 20, right: 20, top: 18, bottom: 16 }).backgroundColor('#DAEBF9')
   }
@@ -642,6 +644,7 @@ struct Index {
   private conversation() {
     Column({ space: 0 }) {
       TextInput({ text: this.historyQuery, placeholder: '查找当前对话的文字或文件名' }).fontSize(12).height(36)
+        .fontColor(INK).placeholderColor(MUTED).caretColor(BLUE)
         .backgroundColor(Color.White).borderRadius(4).margin({ top: 8, left: 12, right: 12, bottom: 6 })
         .onChange((value: string) => this.changeHistoryQuery(value))
       Stack({ alignContent: Alignment.BottomEnd }) {
@@ -723,22 +726,28 @@ struct Index {
   @Builder
   private composer() {
     Column({ space: 4 }) {
-      Row({ space: 16 }) {
+      // Wrap toolbar items when their intrinsic widths exceed the available space.
+      Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {
         Button('图片').height(30).fontSize(13).fontColor(BLUE).type(ButtonType.Normal).backgroundColor(Color.Transparent)
+          .padding({ left: 10, right: 10 }).margin({ right: 8, bottom: 4 })
           .onClick(() => this.store?.chooseImages(this.selected))
         Button('文件').height(30).fontSize(13).fontColor(BLUE).type(ButtonType.Normal).backgroundColor(Color.Transparent)
+          .padding({ left: 10, right: 10 }).margin({ right: 8, bottom: 4 })
           .onClick(() => this.store?.chooseFiles(this.selected))
         Button('文件夹').height(30).fontSize(13).fontColor(BLUE).type(ButtonType.Normal).backgroundColor(Color.Transparent)
+          .padding({ left: 10, right: 10 }).margin({ right: 8, bottom: 4 })
           .onClick(() => this.store?.chooseFolder(this.selected))
-        PasteButton({ icon: PasteIconStyle.LINES, text: PasteDescription.PASTE, buttonType: ButtonType.Normal }).fontSize(12)
-          .onClick((_event: ClickEvent, result: PasteButtonOnClickResult) => {
-            if (result === PasteButtonOnClickResult.SUCCESS) {
-              const peer = this.selected;
-              this.store?.pasteImage(peer).then((text: string) => { if (this.selected === peer) { this.draft += text; } });
-            }
-          })
-        Blank()
+        Row() {
+          PasteButton({ icon: PasteIconStyle.LINES, text: PasteDescription.PASTE, buttonType: ButtonType.Normal }).fontSize(12)
+            .onClick((_event: ClickEvent, result: PasteButtonOnClickResult) => {
+              if (result === PasteButtonOnClickResult.SUCCESS) {
+                const peer = this.selected;
+                this.store?.pasteImage(peer).then((text: string) => { if (this.selected === peer) { this.draft += text; } });
+              }
+            })
+        }.margin({ right: 8, bottom: 4 })
         Text(this.selected === ASSISTANT_ID ? '仅本机' : '局域网直传').fontSize(10).fontColor(MUTED)
+          .margin({ bottom: 4 })
       }.width('100%')
       Row({ space: 8 }) {
         Column({ space: 0 }) {
@@ -758,7 +767,9 @@ struct Index {
             }.scrollable(ScrollDirection.Horizontal).align(Alignment.Start)
               .width('100%').height(98).margin({ top: 8 })
           }
+          // Keep input colors paired with the fixed light surface in system dark mode.
           TextArea({ text: this.draft, placeholder: this.online() ? '写点什么…' : '离线也可留言，上线后自动发送' })
+            .fontColor(INK).placeholderColor(MUTED).caretColor(BLUE)
             .minLines(1).maxLines(5).constraintSize({ minHeight: 38, maxHeight: 118 })
             .padding({ left: 10, right: 10, top: 9, bottom: 9 }).fontSize(14).borderRadius(5).backgroundColor(Color.Transparent).width('100%')
             .onChange((value: string) => { this.draft = value; })
@@ -783,6 +794,7 @@ struct Index {
           .type(ButtonType.Normal).backgroundColor(Color.Transparent).onClick(() => { this.settings = false; })
       }.width('100%')
       TextInput({ text: this.editingName, placeholder: '设备名称' }).maxLength(40).borderRadius(5)
+        .fontColor(INK).placeholderColor(MUTED).caretColor(BLUE).backgroundColor('#F2F5F8')
         .onChange((value: string) => { this.editingName = value; })
       Text('邻聊仅连接同一局域网。消息和文件不经过公网服务器；请在可信 Wi-Fi 使用。系统可能在后台暂停网络，回到前台会重新发现设备。')
         .fontSize(12).fontColor(MUTED).lineHeight(20)
