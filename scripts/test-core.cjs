@@ -12,6 +12,48 @@ const root = path.resolve(__dirname, '..');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'lanchat-harmony-test-'));
 const stores = [];
 const prefCache = new Map();
+// Simulates per-device local Asset Store; retained when app preferences are removed.
+const identityAssets = new Map();
+let identityScope = '';
+let identityReadError = 0;
+let identityWriteError = 0;
+const assetAdapter = {
+  Tag: { ALIAS: 1, SECRET: 2, RETURN_TYPE: 3, IS_PERSISTENT: 4, ACCESSIBILITY: 5, SYNC_TYPE: 6 },
+  SyncType: { NEVER: 0 }, ReturnType: { ALL: 0 }, Accessibility: { DEVICE_POWERED_ON: 0 },
+  ErrorCode: { NOT_FOUND: 24000002 },
+  querySync: query => {
+    if (identityReadError) throw Object.assign(new Error('Asset read failed'), { code: identityReadError });
+    const value = identityAssets.get(identityScope);
+    if (!value) throw Object.assign(new Error('Not found'), { code: 24000002 });
+    assert.equal(Buffer.from(query.get(1)).toString(), 'localchat.device-identity.v1');
+    return [new Map([[2, value]])];
+  },
+  addSync: attributes => {
+    if (identityWriteError) throw Object.assign(new Error('Asset write failed'), { code: identityWriteError });
+    assert.equal(attributes.get(4), true, 'identity must survive uninstall');
+    assert.equal(attributes.get(5), 0);
+    assert.equal(attributes.get(6), 0, 'identity must not sync to another device');
+    assert(!identityAssets.has(identityScope), 'existing identity must never be overwritten');
+    identityAssets.set(identityScope, attributes.get(2));
+  }
+};
+const transientRequests = [];
+const transientCancels = [];
+let transientRequestError = false;
+let transientCancelError = false;
+let transientDuration = 180000;
+const backgroundTaskAdapter = {
+  requestSuspendDelay: (reason, callback) => {
+    if (transientRequestError) throw Object.assign(new Error('Quota exhausted'), { code: 9900002 });
+    const request = { requestId: transientRequests.length + 1, actualDelayTime: transientDuration, callback, reason };
+    transientRequests.push(request);
+    return request;
+  },
+  cancelSuspendDelay: id => {
+    transientCancels.push(id);
+    if (transientCancelError) throw new Error('Service unavailable');
+  }
+};
 const copyCalls = [];
 let failFolderCopy = false;
 function nativePath(uriOrPath) {
@@ -92,6 +134,8 @@ const removedContacts = [];
 let rejectContactDonation = false;
 global.$r = name => name;
 const kits = {
+  '@kit.BackgroundTasksKit': { backgroundTaskManager: backgroundTaskAdapter },
+  '@kit.AssetStoreKit': { asset: assetAdapter },
   'BuildProfile': { default: { BUNDLE_NAME: 'com.hohode.localchat' } },
   '@kit.PerformanceAnalysisKit': { hilog: { warn: () => {} } },
   '@kit.IntentsKit': { insightIntent: {
@@ -111,6 +155,7 @@ const kits = {
   '@kit.ArkUI': { FrameCallback: class {}, KeyboardAvoidMode: {}, window: {}, promptAction: {} },
   '@kit.ArkTS': { util, uri: { URI: URIAdapter } }, '@kit.NetworkKit': { socket: {}, mdns: {} },
   '@kit.ArkData': { preferences: { getPreferencesSync: context => {
+    identityScope = context.filesDir;
     if (!prefCache.has(context.filesDir)) prefCache.set(context.filesDir, new Map());
     const values = prefCache.get(context.filesDir);
     return { getSync: (key, fallback) => values.get(key) ?? fallback, putSync: (key, value) => values.set(key, value), flush: async () => {} };
@@ -146,6 +191,80 @@ const { Channel } = load(`${source}/network/LanNetwork.ets`);
 const { ChatStore } = load(`${source}/store/ChatStore.ets`);
 const { ASSISTANT_ID } = load(`${source}/model/Models.ets`);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+function backgroundReceiveWindow() {
+  const { BackgroundReceiveWindow } = load(`${source}/background/BackgroundReceiveWindow.ets`);
+  const receiver = new BackgroundReceiveWindow();
+  let saved = 0;
+  const checkpoint = () => saved++;
+  let count = transientRequests.length;
+  receiver.enter(true, checkpoint);
+  assert.equal(saved, 1, 'persist before background suspension');
+  const first = transientRequests.at(-1);
+  assert.equal(transientRequests.length, count + 1);
+  receiver.enter(true, checkpoint);
+  assert.equal(transientRequests.length, count + 1, 'duplicate lifecycle callback does not use extra quota');
+  first.callback();
+  assert.equal(saved, 2, 'persist when the system expires the grant');
+  assert.equal(transientCancels.at(-1), first.requestId);
+  receiver.enter(true, checkpoint);
+  assert.equal(transientRequests.length, count + 1, 'never renew after expiry while still in background');
+  receiver.leave(); receiver.enter(true, checkpoint);
+  const second = transientRequests.at(-1);
+  assert.notEqual(second.requestId, first.requestId);
+  const beforeStale = saved;
+  first.callback();
+  assert.equal(saved, beforeStale, 'stale expiry cannot affect the next background visit');
+  receiver.leave();
+  assert.equal(transientCancels.at(-1), second.requestId);
+  second.callback(); assert.equal(saved, beforeStale, 'foreground ignores late expiry callback');
+  count = transientRequests.length;
+  receiver.enter(false, checkpoint);
+  assert.equal(transientRequests.length, count, 'offline application does not spend receive quota');
+  receiver.leave(); transientRequestError = true;
+  assert.doesNotThrow(() => receiver.enter(true, checkpoint));
+  assert.equal(transientRequests.length, count);
+  receiver.leave(); transientRequestError = false;
+  transientDuration = 60000; receiver.enter(true, checkpoint);
+  assert.equal(transientRequests.at(-1).actualDelayTime, 60000);
+  transientCancelError = true; assert.doesNotThrow(() => receiver.leave()); transientCancelError = false;
+  transientDuration = 0; receiver.enter(true, checkpoint);
+  assert.equal(transientCancels.at(-1), transientRequests.at(-1).requestId, 'zero grant is released');
+  receiver.leave(); transientDuration = 180000;
+  console.log('PASS background receive window: lifecycle deduplication, expiry checkpoint/release, no automatic renewal, foreground cancellation, stale callbacks, offline skip, quota/service errors and variable system grants (Node platform adapter)');
+}
+function deviceIdentity() {
+  const { restoreDeviceIdentity } = load(`${source}/store/DeviceIdentity.ets`);
+  identityScope = 'identity-unit';
+  const old = crypto.randomUUID();
+  assert.equal(restoreDeviceIdentity(old), old, 'migrate existing UUID');
+  assert.equal(restoreDeviceIdentity(''), old, 'uninstall loses preferences but keeps identity');
+  assert.equal(restoreDeviceIdentity(crypto.randomUUID()), old, 'asset takes precedence over restored preferences');
+  identityScope = 'identity-other-device';
+  const fresh = restoreDeviceIdentity('');
+  assert.notEqual(fresh, old);
+  assert.equal(restoreDeviceIdentity(''), fresh, 'fresh install identity remains stable');
+  identityReadError = 24000001;
+  assert.throws(() => restoreDeviceIdentity(old), /Asset read failed/);
+  identityReadError = 0;
+  identityScope = 'identity-write-failure'; identityWriteError = 201;
+  assert.throws(() => restoreDeviceIdentity(old), /Asset write failed/);
+  identityWriteError = 0;
+  identityAssets.set(identityScope, new Uint8Array(Buffer.from('corrupt')));
+  assert.throws(() => restoreDeviceIdentity(old), /设备身份已损坏/);
+  identityReadError = 24000001;
+  const unavailable = createStore('identity-unavailable');
+  unavailable.start(); unavailable.resumeNetwork(); unavailable.refresh();
+  assert.equal(unavailable.deviceId, '');
+  assert.match(unavailable.networkStatus, /设备身份暂不可用/);
+  assert.equal(unavailable.timeoutTimer, -1, 'unavailable identity must not start networking');
+  identityReadError = 0;
+  const migratedDir = path.join(temporary, 'identity-migrated-store');
+  prefCache.set(migratedDir, new Map([['deviceId', old]]));
+  assert.equal(createStore('identity-migrated-store').deviceId, old);
+  prefCache.delete(migratedDir);
+  assert.equal(createStore('identity-migrated-store').deviceId, old, 'store restores identity after preference removal');
+  console.log('PASS device identity: existing UUID migration, reinstall recovery, device isolation, corrupt/read/write failures and networking guard (Node Asset Store adapter)');
+}
 async function wait(check, label, timeout = 10000) {
   const deadline = Date.now() + timeout;
   while (!check()) { if (Date.now() > deadline) throw new Error(`Timed out: ${label}`); await delay(20); }
@@ -748,12 +867,17 @@ async function networkRecovery() {
   const { default: EntryAbility } = load(`${source}/entryability/EntryAbility.ets`);
   const lifecycleCalls = [];
   const originalShared = ChatStore.shared;
-  ChatStore.shared = () => ({ setForeground: value => lifecycleCalls.push(value ? 'foreground' : 'background'),
+  ChatStore.shared = () => ({ ready: true, checkpoint: () => lifecycleCalls.push('checkpoint'), stop: () => lifecycleCalls.push('stop'), setForeground: value => lifecycleCalls.push(value ? 'foreground' : 'background'),
     start: () => lifecycleCalls.push('start'), resumeNetwork: () => lifecycleCalls.push('resume'), refresh: () => lifecycleCalls.push('refresh') });
   try {
     const ability = new EntryAbility();
     ability.onForeground(); ability.onBackground(); ability.onForeground(); ability.onForeground();
-    assert.deepEqual(lifecycleCalls, ['foreground', 'start', 'background', 'foreground', 'resume', 'foreground', 'start']);
+    assert.deepEqual(lifecycleCalls, ['foreground', 'start', 'background', 'checkpoint', 'foreground', 'resume', 'foreground', 'start']);
+    ability.onBackground();
+    const pending = transientRequests.at(-1);
+    ability.onDestroy();
+    assert.equal(transientCancels.at(-1), pending.requestId, 'destroy releases background quota');
+    assert.equal(lifecycleCalls.at(-1), 'stop');
     console.log('PASS Ability lifecycle: first foreground starts once; returning from background resumes network; no start/refresh race');
   } finally { ChatStore.shared = originalShared; }
 }
@@ -809,6 +933,6 @@ async function interop() {
   } finally { mac.kill(); }
 }
 (async()=>{
-  try { await core(); await attachmentOnly(); await incomingShare(); await offlineDelivery(); await folders(); await scrollNavigation(); await networkRecovery(); await interop(); }
+  try { backgroundReceiveWindow(); deviceIdentity(); await core(); await attachmentOnly(); await incomingShare(); await offlineDelivery(); await folders(); await scrollNavigation(); await networkRecovery(); await interop(); }
   finally { for(const store of stores) await store.stop(); fs.rmSync(temporary,{recursive:true,force:true}); }
 })().catch(error=>{console.error(error);process.exitCode=1;});

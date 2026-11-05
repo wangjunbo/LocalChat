@@ -1,6 +1,6 @@
 # 邻聊 · HarmonyOS
 
-原生 ArkTS / ArkUI 手机客户端，与 `/Users/sunshine/SwiftProjects/local-chat` 的 macOS 邻聊互通。项目目录：`/Users/sunshine/DevEcoStudioProjects/LocalChat`。当前鸿蒙版本 **1.0.30**，包名保留为 `com.hohode.localchat`。
+原生 ArkTS / ArkUI 手机客户端，与 `/Users/sunshine/SwiftProjects/local-chat` 的 macOS 邻聊互通。项目目录：`/Users/sunshine/DevEcoStudioProjects/LocalChat`。当前鸿蒙版本 **1.0.51**，包名保留为 `com.hohode.localchat`。
 
 ## 已实现
 
@@ -25,7 +25,7 @@
 
 保留模板的目标/最低 SDK **6.1.1（API 24）**。这不是针对 HarmonyOS 4.x 的应用，也未宣称兼容比项目最低 SDK 更早的系统。如需兼容更早的 HarmonyOS NEXT，请先调整 SDK 并重新验证。
 
-HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；构建后会核验实际包内版本和图标引用，并复制交付包至 `distribution/邻聊-HarmonyOS-v1.0.30-unsigned.hap`。
+HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；构建后会核验实际包内版本和图标引用，并复制交付包至 `distribution/邻聊-HarmonyOS-v1.0.51-unsigned.hap`。
 
 图标分发素材为 `distribution/app_icon.png`（1024×1024 PNG），与 AppScope/entry 源资源一致；SDK 编译器在 HAP 中生成 512×512 运行时图标。
 使用用户配置的签名生成调试包，本次未安装到设备。签名包位于 `distribution/邻聊-HarmonyOS-v1.0.30-signed.hap`；该调试签名受配置的设备范围限制，不是公开分发包。
@@ -171,3 +171,12 @@ Node 适配器现按 OpenHarmony 的“现有父目录 + 源目录名”规则�
 能响应心跳的已有 TCP 连接继续使用；旧连接在恢复时探测，10 秒内无回应则关闭并重连。监听或发现中断、广播注册失败时，每 5 秒重试；无法完成的原生启动、发现和解析操作有超时，失败的旧广播注销会再次尝试，避免一直停在假“已启动”状态。设备发现启动返回错误码 0 时按成功处理。
 
 `node scripts/test-core.cjs` 增加原生网络适配器及实际 EntryAbility 生命周期回调测试，覆盖并发启动、前台资源重建、广播端口更新、旧事件和解析隔离、无响应连接、服务注销/注册失败、发现启动超时、解析超时、停止期间的恢复取消及再次启动。原始 Mac TCP 聊天和文件夹互通测试仍使用隔离本机服务；这些检查不等于鸿蒙真机的系统 mDNS 或后台调度实测。
+
+
+## 退后台短时消息收发窗口（v1.0.51）
+
+局域网已就绪时，EntryAbility 在 onBackground 内同步调用 requestSuspendDelay，申请延后挂起，继续使用现有 TCP/mDNS 与消息通知逻辑。无须新增 KEEP_BACKGROUND_RUNNING 权限，也不会创建数据传输长时任务或常驻通知。实际时长取系统返回的 actualDelayTime，并记录在 LocalChat 日志；不承诺每次达到几分钟。
+
+同一次退后台只申请一次，到期保存聊天状态并取消申请，不循环续期；回前台或销毁 Ability 时释放请求，避免继续消耗短时任务额度。系统额度不足或服务不可用时捕获异常，返回前台沿用现有网络重建逻辑。短时任务有系统额度与电量限制，不能替代长期后台推送。
+
+构建、Node 后台任务适配器及原始 Mac TCP 互通测试通过；未安装设备，实际息屏、后台收消息通知和系统授予时长尚待真机验证。

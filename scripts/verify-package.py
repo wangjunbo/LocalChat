@@ -31,6 +31,7 @@ with zipfile.ZipFile(hap) as archive:
     for name in ['foreground.png', 'background.png']:
         assert 'resources/base/media/' + name in archive.namelist()
     assert 'resources/base/media/app_icon.png' in archive.namelist()
+    assert any(p['name'] == 'ohos.permission.STORE_PERSISTENT_DATA' for p in metadata['module']['requestPermissions'])
     assert any(p['name'] == 'ohos.permission.INTERNET' for p in metadata['module']['requestPermissions'])
 output = root / f'distribution/邻聊-HarmonyOS-v{version}-unsigned.hap'
 shutil.copyfile(hap, output)

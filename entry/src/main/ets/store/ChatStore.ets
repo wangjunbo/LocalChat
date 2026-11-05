@@ -1,3 +1,4 @@
+import { restoreDeviceIdentity } from './DeviceIdentity';
 import { FolderPlan, validFolderPath, removeTree } from './FolderTransfer';
 import { ShareContacts } from './ShareContacts';
 import { systemShare } from '@kit.ShareKit';
@@ -93,6 +94,7 @@ export class ChatStore {
   private network: LanNetwork;
   private root: string;
   private startedAt: number = Date.now();
+  private identityReady: boolean = false;
   private runId: string = util.generateRandomUUID();
   private runs: Map<string, string> = new Map();
   private queued: Map<string, Attachment[]> = new Map();
@@ -113,11 +115,14 @@ export class ChatStore {
     if (!fs.accessSync(this.root)) { fs.mkdirSync(this.root, true); }
     if (!fs.accessSync(`${this.root}/files`)) { fs.mkdirSync(`${this.root}/files`, true); }
     this.prefs = preferences.getPreferencesSync(context, { name: 'LanChat' });
-    this.deviceId = this.prefs.getSync('deviceId', '') as string;
-    if (!this.deviceId) {
-      this.deviceId = util.generateRandomUUID();
+    try {
+      this.deviceId = restoreDeviceIdentity(this.prefs.getSync('deviceId', '') as string);
+      this.identityReady = true;
       this.prefs.putSync('deviceId', this.deviceId);
       this.prefs.flush().catch(() => {});
+    } catch (error) {
+      this.networkStatus = '设备身份暂不可用，请重新打开邻聊';
+      this.error = '无法读取或保存设备身份，已暂停联网，请重新打开邻聊后重试';
     }
     this.name = this.prefs.getSync('name', `${deviceInfo.brand || 'HarmonyOS'} 手机`) as string;
     this.load();
@@ -129,10 +134,12 @@ export class ChatStore {
     };
   }
   start(): void {
+    if (!this.identityReady) { this.changed(false); return; }
     this.network.start();
     if (this.timeoutTimer === -1) { this.timeoutTimer = setInterval(() => this.checkTransfers(), 5000); }
   }
   resumeNetwork(): void {
+    if (!this.identityReady) { this.changed(false); return; }
     this.network.resume();
     if (this.timeoutTimer === -1) { this.timeoutTimer = setInterval(() => this.checkTransfers(), 5000); }
   }
@@ -143,7 +150,7 @@ export class ChatStore {
     this.persist();
     if (this.updateTimer !== -1) { clearTimeout(this.updateTimer); this.updateTimer = -1; }
   }
-  refresh(): void { this.network.refresh(); }
+  refresh(): void { if (this.identityReady) { this.network.refresh(); } }
   changeName(name: string): void {
     this.name = name.trim().slice(0, 40) || '鸿蒙手机';
     this.prefs.putSync('name', this.name);
@@ -844,6 +851,8 @@ export class ChatStore {
       });
     } catch (_) { this.archiveWritable = false; this.error = '历史记录读取失败，已保留原文件，本次记录暂不覆盖保存。'; }
   }
+  checkpoint(): void { this.persist(); }
+
   private persist(): boolean {
     if (this.persistTimer !== -1) { clearTimeout(this.persistTimer); this.persistTimer = -1; }
     if (!this.archiveWritable) { return false; }

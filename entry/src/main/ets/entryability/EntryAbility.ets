@@ -1,3 +1,4 @@
+import { BackgroundReceiveWindow } from '../background/BackgroundReceiveWindow';
 import { MessageNotifications } from '../notifications/MessageNotifications';
 import { ChatStore } from '../store/ChatStore';
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
@@ -8,6 +9,7 @@ const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
   private notifications?: MessageNotifications;
+  private backgroundReceive: BackgroundReceiveWindow = new BackgroundReceiveWindow();
   private returnedFromBackground: boolean = false;
   private mainWindow?: window.Window;
   private readonly onAvoidAreaChange = (_options: window.AvoidAreaOptions): void => {
@@ -49,6 +51,7 @@ export default class EntryAbility extends UIAbility {
   }
   onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void { this.handleWant(want); }
   onDestroy(): void {
+    this.backgroundReceive.leave();
     ChatStore.shared(this.context).stop();
   }
 
@@ -94,6 +97,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onForeground(): void {
+    this.backgroundReceive.leave();
     const store = ChatStore.shared(this.context);
     store.setForeground(true);
     if (this.returnedFromBackground) {
@@ -104,7 +108,10 @@ export default class EntryAbility extends UIAbility {
 
   onBackground(): void {
     this.returnedFromBackground = true;
-    ChatStore.shared(this.context).setForeground(false);
+    const store = ChatStore.shared(this.context);
+    store.setForeground(false);
+    // This synchronous request must be made inside onBackground, before suspension.
+    this.backgroundReceive.enter(store.ready, () => store.checkpoint());
     // Ability has back to background
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
   }

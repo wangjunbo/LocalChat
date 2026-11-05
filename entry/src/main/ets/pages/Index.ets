@@ -793,7 +793,7 @@ struct Index {
       TextInput({ text: this.editingName, placeholder: '设备名称' }).maxLength(40).borderRadius(5)
         .fontColor(INK).placeholderColor(MUTED).caretColor(BLUE).backgroundColor('#F2F5F8')
         .onChange((value: string) => { this.editingName = value; })
-      Text('邻聊仅连接同一局域网。消息和文件不经过公网服务器；请在可信 Wi-Fi 使用。系统可能在后台暂停网络，回到前台会重新发现设备。')
+      Text('邻聊仅连接同一局域网。消息和文件不经过公网服务器；请在可信 Wi-Fi 使用。切到后台后会尽量短暂保持消息收发，时长受系统额度和电量限制；无法保证一直在线，回到前台会自动重连。')
         .fontSize(12).fontColor(MUTED).lineHeight(20)
       Button('保存').width('100%').type(ButtonType.Normal).borderRadius(5).backgroundColor(BLUE)
         .onClick(() => { this.store?.changeName(this.editingName); this.settings = false; })
