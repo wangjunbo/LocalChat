@@ -78,13 +78,13 @@ class URIAdapter {
   toString() { return this.url.href; }
 }
 const fsAdapter = {
-  OpenMode: { READ_ONLY: 0, READ_WRITE: 2, CREATE: 64, TRUNC: 512 },
+  OpenMode: { READ_ONLY: 0, WRITE_ONLY: 1, READ_WRITE: 2, CREATE: 64, TRUNC: 512 },
   mkdirSync: (p, recursive = false) => {
     if (fs.existsSync(p)) throw new Error("File exists (HarmonyOS mkdir semantics)");
     return fs.mkdirSync(p, { recursive });
   },
   accessSync: p => fs.existsSync(p),
-  openSync: (p, mode = 0) => ({ fd: fs.openSync(typeof p === 'string' && p.startsWith('file://') ? new URL(p) : p, (mode & 64) ? ((mode & 512) ? 'w+' : 'wx+') : (mode & 2) ? 'r+' : 'r') }),
+  openSync: (p, mode = 0) => ({ fd: fs.openSync(typeof p === 'string' && p.startsWith('file://') ? new URL(p) : p, (mode & 64) ? ((mode & 512) ? 'w+' : 'wx+') : (mode & 3) ? 'r+' : 'r') }),
   closeSync: file => fs.closeSync(typeof file === 'number' ? file : file.fd),
   statSync: p => typeof p === 'number' ? fs.fstatSync(p) : fs.statSync(p),
   readSync: (fd, buffer, opts = {}) => fs.readSync(fd, Buffer.from(buffer), 0, opts.length ?? buffer.byteLength, opts.offset ?? null),
@@ -161,9 +161,23 @@ const kits = {
     return { getSync: (key, fallback) => values.get(key) ?? fallback, putSync: (key, value) => values.set(key, value), flush: async () => {} };
   } } },
   '@kit.CoreFileKit': { fileIo: fsAdapter, picker: { DocumentSelectMode: { FOLDER: 1 }, DocumentViewPicker: class { async select() { return pickedDirectory; } } }, fileUri: { getUriFromPath: p => require('node:url').pathToFileURL(p).href, FileUri: FileUriAdapter } },
-  '@kit.MediaLibraryKit': { photoAccessHelper: {} }, '@kit.ImageKit': { image: {} },
+  '@kit.MediaLibraryKit': { photoAccessHelper: {
+    PhotoType: { IMAGE: 1 },
+    getPhotoAccessHelper: () => ({
+      showAssetsCreationDialog: async (sources, configs) => {
+        galleryCalls.push({ sources, configs });
+        if (galleryCancel) return [];
+        const target = path.join(temporary, `gallery-${galleryCalls.length}.png`);
+        fs.writeFileSync(target, '');
+        return [require('node:url').pathToFileURL(target).href];
+      },
+      release: async () => {}
+    })
+  } }, '@kit.ImageKit': { image: {} },
   '@kit.BasicServicesKit': { deviceInfo: { brand: 'Test' }, pasteboard: {} }
 };
+const galleryCalls = [];
+let galleryCancel = false;
 const cache = new Map();
 function load(file) {
   file = path.resolve(file);
@@ -278,6 +292,37 @@ function recordingChannel(store) {
   channel.client = { send: async ({data}) => sent.push(...new Framer().append(data)), close: async () => {} };
   store.network.channels.push(channel);
   return { channel, sent };
+}
+async function gallerySaving() {
+  const store = createStore('gallery'); const { channel, sent } = recordingChannel(store);
+  const peer = crypto.randomUUID();
+  await store.process(Object.assign(new Packet('hello'), { sender: peer, name: 'Gallery test' }), channel);
+  async function receive(name) {
+    const offer = Object.assign(new Packet('offer'), { name, size: 3 });
+    await store.process(offer, channel);
+    await store.process(Object.assign(new Packet('chunk', offer.id), { data: Buffer.from('abc').toString('base64') }), channel);
+    await store.process(new Packet('end', offer.id), channel);
+    return store.messages.find(item => item.id === offer.id);
+  }
+  const photo = await receive('照片.png');
+  assert(photo.pendingGallerySave); assert.equal(galleryCalls.length, 0, 'background must not open dialogs');
+  assert(sent.some(item => item.kind === 'complete' && item.id === photo.id), 'receipt precedes gallery authorization');
+  store.foreground = true; await store.savePendingImages();
+  assert(photo.galleryUri); assert(!photo.pendingGallerySave);
+  assert.equal(fs.readFileSync(nativePath(photo.galleryUri), 'utf8'), 'abc');
+  assert.equal(fs.readFileSync(photo.path, 'utf8'), 'abc', 'preview source is retained');
+  assert.equal(galleryCalls[0].configs[0].fileNameExtension, 'png');
+  await store.saveToDownload(photo); assert.equal(galleryCalls.length, 1, 'do not save duplicates');
+  store.checkpoint(); const restored = createStore('gallery');
+  assert.equal(restored.messages.find(item => item.id === photo.id).galleryUri, photo.galleryUri);
+  store.foreground = false; galleryCancel = true;
+  const canceled = await receive('取消.jpg');
+  store.foreground = true; await store.savePendingImages();
+  assert(!canceled.galleryUri); assert(fs.existsSync(canceled.path)); assert(!canceled.pendingGallerySave);
+  galleryCancel = false; await store.saveToDownload(canceled); assert(canceled.galleryUri, 'manual retry after cancellation');
+  const count = galleryCalls.length;
+  await receive('普通文件.bin'); assert.equal(galleryCalls.length, count);
+  console.log('PASS gallery saving (Node adapter): receive receipt, foreground queue, original retention, duplicate prevention, cancellation/retry, ordinary files');
 }
 async function core() {
   const packet = new Packet('text'); packet.text = '你好 HarmonyOS 👋\n多行消息';
@@ -886,7 +931,7 @@ async function interop() {
   const macRoot=process.env.LANCHAT_MAC_SOURCE || '/Users/sunshine/SwiftProjects/local-chat';
   if (!fs.existsSync(path.join(macRoot,'Sources/LanChat/ChatStore.swift'))) throw new Error('Set LANCHAT_MAC_SOURCE to Mac project for interoperability test');
   const harness=path.join(root,'scripts/MacInterop.swift'); const binary=path.join(temporary,'MacInterop');
-  const swiftSources=['Wire.swift','ChatStore.swift','AssistantArchive.swift','ChatHistory.swift','BonjourFallback.swift'].map(f=>path.join(macRoot,'Sources/LanChat',f));
+  const swiftSources=['Wire.swift','ChatStore.swift','AssistantArchive.swift','ChatHistory.swift','BonjourFallback.swift','Localization.swift'].map(f=>path.join(macRoot,'Sources/LanChat',f));
   execFileSync('swiftc',['-parse-as-library',...swiftSources,harness,'-o',binary],{stdio:'pipe'});
   const mac = spawn(binary,[path.join(temporary,'mac')],{stdio:['ignore','pipe','pipe']});
   let log='';let macError='';let exited=false;let macCode;
@@ -933,6 +978,6 @@ async function interop() {
   } finally { mac.kill(); }
 }
 (async()=>{
-  try { backgroundReceiveWindow(); deviceIdentity(); await core(); await attachmentOnly(); await incomingShare(); await offlineDelivery(); await folders(); await scrollNavigation(); await networkRecovery(); await interop(); }
+  try { backgroundReceiveWindow(); deviceIdentity(); await core(); await gallerySaving(); await attachmentOnly(); await incomingShare(); await offlineDelivery(); await folders(); await scrollNavigation(); await networkRecovery(); await interop(); }
   finally { for(const store of stores) await store.stop(); fs.rmSync(temporary,{recursive:true,force:true}); }
 })().catch(error=>{console.error(error);process.exitCode=1;});

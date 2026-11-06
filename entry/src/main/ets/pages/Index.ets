@@ -303,7 +303,7 @@ struct Index {
     this.getUIContext().getPromptAction().showActionMenu({
       title: message.name,
       buttons: [
-        { text: '永久保存', color: BLUE },
+        { text: !message.isDirectory && isImage(message.name) ? (message.galleryUri ? '已保存到图库' : '保存到图库') : '永久保存', color: BLUE },
         { text: '分享', color: BLUE },
         { text: '重命名', color: BLUE },
         { text: '删除', color: '#BE4141' }
@@ -696,7 +696,7 @@ struct Index {
             }
             if (message.path) {
               Row({ space: 8 }) {
-                Button('永久保存').fontSize(11).fontColor(BLUE).height(26).type(ButtonType.Normal).borderRadius(4)
+                Button(!message.isDirectory && isImage(message.name) ? (message.galleryUri ? '已保存到图库' : '保存到图库') : '永久保存').fontSize(11).fontColor(BLUE).height(26).type(ButtonType.Normal).borderRadius(4)
                   .backgroundColor('#EDF4FA').onClick(() => this.store?.saveToDownload(message))
                 Button('分享').fontSize(11).fontColor(BLUE).height(26).type(ButtonType.Normal).borderRadius(4)
                   .backgroundColor('#EDF4FA').onClick(() => this.store?.shareFile(message))

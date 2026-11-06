@@ -12,7 +12,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { deviceInfo, BusinessError } from '@kit.BasicServicesKit';
 import { Packet, CHUNK_SIZE, messageDate } from '../network/Wire';
 import { Channel, LanNetwork } from '../network/LanNetwork';
-import { Peer, Message, Archive, Attachment, IncomingShare, HistoryScrollPosition, ASSISTANT_ID } from '../model/Models';
+import { Peer, Message, Archive, Attachment, IncomingShare, HistoryScrollPosition, ASSISTANT_ID, isImage } from '../model/Models';
 
 class Transfer {
   isDirectory: boolean = false;
@@ -83,7 +83,7 @@ export class ChatStore {
   }
   setForeground(value: boolean): void {
     this.foreground = value;
-    if (value) { this.markRead(this.activePeer); }
+    if (value) { this.markRead(this.activePeer); this.savePendingImages(); }
   }
   openFromNotification(peer: string): void {
     if (!this.peers.some((item: Peer) => item.id === peer)) { return; }
@@ -103,6 +103,7 @@ export class ChatStore {
   private outgoing: Map<string, Transfer> = new Map();
   private exportingFiles: Set<string> = new Set();
   private archiveWritable: boolean = true;
+  private savingPendingImages: boolean = false;
   private persistTimer: number = -1;
   private timeoutTimer: number = -1;
   private noticeTimer: number = -1;
@@ -398,7 +399,47 @@ export class ChatStore {
     this.notice = '文件夹已移动到所选位置'; this.changed();
     if (!this.persist()) { this.report('文件夹已移动，但聊天记录保存失败'); }
   }
+  private async savePendingImages(): Promise<void> {
+    if (this.savingPendingImages || !this.foreground) { return; }
+    this.savingPendingImages = true;
+    try {
+      while (this.foreground) {
+        const message = this.messages.find((item: Message) => item.pendingGallerySave === true);
+        if (!message) { break; }
+        message.pendingGallerySave = false;
+        await this.saveImageToGallery(message);
+        this.changed();
+      }
+    } finally { this.savingPendingImages = false; }
+  }
+  async saveImageToGallery(message: Message): Promise<void> {
+    if (!message.path || message.isDirectory || !isImage(message.name) || message.galleryUri) { return; }
+    const key = `${message.peer}:${message.id}`;
+    if (this.exportingFiles.has(key)) { return; }
+    this.exportingFiles.add(key);
+    message.pendingGallerySave = false;
+    try {
+      const dot = message.name.lastIndexOf('.');
+      const helper = photoAccessHelper.getPhotoAccessHelper(this.context);
+      try {
+        const targets = await helper.showAssetsCreationDialog([fileUri.getUriFromPath(message.path)], [{
+          title: message.name.substring(0, dot),
+          fileNameExtension: message.name.substring(dot + 1).toLowerCase(),
+          photoType: photoAccessHelper.PhotoType.IMAGE
+        }]);
+        if (!targets.length) { return; }
+        const file = fs.openSync(targets[0], fs.OpenMode.WRITE_ONLY);
+        try { await fs.copyFile(message.path, file.fd); }
+        finally { fs.closeSync(file); }
+        message.galleryUri = targets[0];
+        this.changed();
+      } finally { await helper.release(); }
+    } catch (error) {
+      this.report(`未保存到图库，原图仍在聊天中，可点“保存到图库”重试：${(error as Error).message}`);
+    } finally { this.exportingFiles.delete(key); }
+  }
   async saveToDownload(message: Message): Promise<void> {
+    if (!message.isDirectory && isImage(message.name)) { await this.saveImageToGallery(message); return; }
     await this.exportFile(message);
   }
   async openSavedDirectory(message: Message): Promise<void> {
@@ -674,10 +715,12 @@ export class ChatStore {
           message.name = target.substring(target.lastIndexOf('/') + 1);
           fs.renameSync(transfer.path, target);
           this.incoming.delete(key); message.path = target; message.status = '已保存'; message.transferred = message.bytes;
+          message.pendingGallerySave = !message.isDirectory && isImage(message.name);
           this.changed();
           if (!this.persist()) { throw new Error('无法保存接收记录'); }
           await channel.send(new Packet('complete', packet.id));
         } catch (_) { this.fail(key, '保存文件失败'); }
+        if (message.pendingGallerySave) { this.savePendingImages(); }
         break;
       }
       case 'progress': {

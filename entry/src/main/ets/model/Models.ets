@@ -1,4 +1,4 @@
-export const APP_VERSION: string = '1.0.51';
+export const APP_VERSION: string = '1.0.52';
 export const ASSISTANT_ID: string = 'local-assistant';
 export class Peer {
   id: string = '';
@@ -17,6 +17,8 @@ export class Message {
   date: number = Date.now();
   name: string = '';
   savedUri: string = '';
+  galleryUri: string = '';
+  pendingGallerySave: boolean = false;
   path: string = '';
   bytes: number = 0;
   transferred: number = 0;
