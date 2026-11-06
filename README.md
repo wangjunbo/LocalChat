@@ -1,182 +1,117 @@
-# 邻聊 · HarmonyOS
+# LocalChat for HarmonyOS
 
-原生 ArkTS / ArkUI 手机客户端，与 `/Users/sunshine/SwiftProjects/local-chat` 的 macOS 邻聊互通。项目目录：`/Users/sunshine/DevEcoStudioProjects/LocalChat`。当前鸿蒙版本 **1.0.51**，包名保留为 `com.hohode.localchat`。
+<img src="distribution/app_icon.png" alt="LocalChat app icon" width="96" height="96">
 
-## 已实现
+LocalChat (邻聊) is a native HarmonyOS app for messaging and file sharing across devices on your local network. Built with ArkTS and ArkUI, it communicates directly with the macOS LocalChat client without accounts or a cloud relay.
 
-- 同一局域网内 mDNS 自动发现、TCP 双向连接、心跳和断线重试；刷新不会主动断开健康会话。
-- 上线握手上报 `Phone`，显示对端 `PC` / `Phone`；旧版未上报时不推断类型。支持修改设备名称并同步给在线客户端。
-- 中文、多行文字及送达确认、消息去重、本地聊天记录、会话搜索、复制和删除。
-- 系统相册选图、系统文件选择器、多附件暂存、移除后再发送；系统安全粘贴按钮读取剪贴板图片或文字。图片在输入区和聊天记录中预览，点击查看大图。
-- 48 KB 分块发送文件、接收进度、完成确认、空文件、同名文件隔离、120 秒无进展超时、断线清理未完成接收文件。应用不设文件总大小上限，受磁盘与文件系统限制。
-- 离线文件传输助手；接收文件保存在应用私有目录，使用“另存到…”导出到用户通过系统选择的位置。删除聊天记录保留已保存文件。
-- 顶部紧凑联系人栏，原生返回图标；系统返回先退出图片预览/设置，再回设备列表。版本号与首页底部设置图标同行显示。
-- 名称统一为“邻聊”，应用、入口、启动和首页使用同一份 Mac 邻聊图标母版。
+**Current version:** 1.0.52 · **Minimum SDK:** HarmonyOS 6.1.1 (API 24) · **Bundle ID:** `com.hohode.localchat`
 
-## 构建
+## Screenshots
 
-首次检出先将 `build-profile.example.json5` 复制为 `build-profile.json5`，再通过 DevEco Studio 配置本机调试签名。本地签名配置不入库。
+Captured on a HarmonyOS phone with the Chinese interface in v1.0.36. The current interface may differ slightly.
 
-使用已有 DevEco Studio 6.1 工具链，无第三方业务依赖：
+| Nearby devices | Chat and file sharing | Device settings |
+| --- | --- | --- |
+| <img src="distribution/screenshots/phone-01.png" alt="Nearby devices and File Transfer Assistant" width="240"> | <img src="distribution/screenshots/phone-02.png" alt="Chat showing completed file transfers and an image preview" width="240"> | <img src="distribution/screenshots/phone-03.png" alt="Device name settings and local network information" width="240"> |
+
+## Features
+
+- **Automatic device discovery:** Find nearby clients using mDNS, connect over TCP, and recover connections when returning to the foreground.
+- **Local messaging:** Send Unicode and multiline text with delivery acknowledgments, duplicate detection, searchable history, and per-conversation reading positions.
+- **Images and attachments:** Select photos, files, or folders; preview images; manage multiple attachments; and send attachments without accompanying text. A system paste button supports text and images.
+- **File and folder transfers:** Transfer files in 48 KB chunks with progress and completion acknowledgments. Folder transfers preserve nested folders, empty directories, empty files, and Unicode names without creating an archive.
+- **Offline queue:** Keep outgoing messages and attachment copies locally, then retry when both devices are online and reachable. Pending messages survive app restarts.
+- **File Transfer Assistant:** Keep text, images, files, and folders locally without another device.
+- **System sharing:** Receive text, links, images, and files from other apps, then tap a device to queue delivery or the assistant to save locally. Incoming shares support up to nine items.
+- **Save received content:** Export files and folders through system pickers. Received images can be saved to the gallery through the system authorization dialog, with the original retained in chat.
+- **Notifications:** Local message notifications, unread counts, and app badges, subject to system permissions and settings.
+
+## Getting started
+
+1. Run LocalChat on your HarmonyOS device and a compatible client on another device.
+2. Connect both devices to the same local network and allow local network traffic through any firewall.
+3. Open a discovered device to send messages or attachments.
+
+Offline delivery requires both devices to run LocalChat at the same time once connectivity returns. Folder transfers require compatible versions on both ends; older clients can still exchange ordinary files.
+
+## Build from source
+
+The supplied scripts target macOS with DevEco Studio installed at `/Applications/DevEco-Studio.app`. Install the HarmonyOS 6.1.1 (API 24) SDK and, for the interoperability tests, the Swift compiler.
+
+```sh
+git clone git@github.com:wangjunbo/LocalChat.git
+cd LocalChat
+cp build-profile.example.json5 build-profile.json5
+```
+
+Open the project in DevEco Studio, let it resolve project dependencies, and configure your own local debug signing profile. Local signing configuration and certificate files are excluded from Git. Keep the existing bundle ID unless you are intentionally creating a separate app.
+
+Build and validate the package:
 
 ```sh
 ./scripts/build.sh
 ```
 
-保留模板的目标/最低 SDK **6.1.1（API 24）**。这不是针对 HarmonyOS 4.x 的应用，也未宣称兼容比项目最低 SDK 更早的系统。如需兼容更早的 HarmonyOS NEXT，请先调整 SDK 并重新验证。
+The script assembles the HAP, checks the packaged version, permissions, and icon references, and copies the output to `distribution/`:
 
-HAP 输出：`entry/build/default/outputs/default/entry-default-unsigned.hap`；构建后会核验实际包内版本和图标引用，并复制交付包至 `distribution/邻聊-HarmonyOS-v1.0.51-unsigned.hap`。
+```text
+entry/build/default/outputs/default/entry-default-unsigned.hap
+distribution/邻聊-HarmonyOS-v1.0.52-unsigned.hap
+distribution/邻聊-HarmonyOS-v1.0.52-signed.hap  # when signing is configured
+```
 
-图标分发素材为 `distribution/app_icon.png`（1024×1024 PNG），与 AppScope/entry 源资源一致；SDK 编译器在 HAP 中生成 512×512 运行时图标。
-使用用户配置的签名生成调试包，本次未安装到设备。签名包位于 `distribution/邻聊-HarmonyOS-v1.0.30-signed.hap`；该调试签名受配置的设备范围限制，不是公开分发包。
+A debug-signed HAP is limited to the devices allowed by its signing profile. Building does not install the app.
 
-## 验证
+## Testing
+
+Run the core and macOS interoperability suite with DevEco Studio's bundled Node.js:
 
 ```sh
 /Applications/DevEco-Studio.app/Contents/tools/node/bin/node scripts/test-core.cjs
 ```
 
-测试直接转译本项目的 ArkTS 协议和业务类，以明确的 Node 适配器替代鸿蒙文件系统、偏好设置和网络接口；不会把模拟接口测试描述为原生系统 API 实测。
+The interoperability test needs the macOS LocalChat source tree. Its default location is `/Users/sunshine/SwiftProjects/local-chat`; override it when necessary:
 
-- 协议测试：UTF-8 中文、拆包、粘包、4 字节网络字节序长度、非法和超大包拒绝。
-- 业务测试：Phone 握手、类型更新、重复消息确认、二进制/空文件、同名隔离、路径清洗、超长文件数据拒绝、部分文件清理、分块发送、超时、本地历史、助手和删除。
-- 跨语言 TCP 测试：临时编译原始 Mac `ChatStore`，使用独立服务类型 `_lcharmonytest._tcp` 与本项目实际业务代码进行中文互发和双向 180 KB 文件传输，逐字节比对与完成确认。不会向正常邻聊客户端发送测试消息。
-- 可用 `LANCHAT_MAC_SOURCE` 指向其他位置的 Mac 源码。
+```sh
+LANCHAT_MAC_SOURCE=/path/to/local-chat \
+  /Applications/DevEco-Studio.app/Contents/tools/node/bin/node scripts/test-core.cjs
+```
 
-当前 HAP 构建、协议、业务和跨语言 TCP 测试通过。已在连接的 HarmonyOS 7.0（API 26）手机安装启动，实际发现两台 Mac 并显示 PC，文件助手文字保存通过。重启测试发现重复创建目录导致的闪退，v1.0.2 已修复并补充符合鸿蒙语义的测试。修复后已在手机连续两次冷启动验证，历史记录恢复、重新发现 Mac、删除测试记录均正常。相册/文件选择器、安全粘贴按钮及完整双机文件传输仍需进一步真机验证。
+The suite covers protocol framing, message delivery, device identity, history, offline queues, file and folder transfers, gallery saving, incoming shares, reading positions, network recovery, and background lifecycle handling. It also compiles the original Swift `ChatStore` and tests real TCP communication with the ArkTS store running through Node platform adapters, including bidirectional text, files, folders, and receipt confirmation.
 
-真机验收建议：两端同一 Wi-Fi → 启动新版 Mac 与鸿蒙应用 → 检查 PC/Phone → 双向中文消息 → 相册图片及截图粘贴 → 双向空文件和大文件 → 比对文件哈希 → 断网恢复 → 切到后台再回前台 → 重启确认历史。
+Interoperability tests use an isolated `_lcharmonytest._tcp` service and temporary data rather than normal client sessions.
 
-## 协议与平台差异
+**Validation scope:** The current build, package checks, Node adapter tests, and Swift TCP interoperability tests pass. These checks do not establish native HarmonyOS mDNS, gallery authorization, paste, notification, picker, or ArkUI behavior on a physical device. See the [device test notes](docs/DEVICE-TEST.md) for additional context.
 
-详见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。无账号、云端服务或公网回退；网络协议沿用 Mac 版，未提供身份认证和传输加密，设备类型是对端自报信息。使用可信局域网。
+## Network and storage behavior
 
-鸿蒙系统可能暂停后台应用，本版本未申请长期后台保活，回到前台会重试发现和连接。不能保证应用在后台时持续接收文件；中断的传输需重新发送。应用私有文件在卸载/清除数据时随应用删除，需长期保留的文件请另存。程序崩溃可能留下 `.receiving.part`，正常断线会清理。
+LocalChat discovers devices using `_lanternchat._tcp`. Messages use length-prefixed UTF-8 JSON frames over TCP; file chunks are Base64-encoded inside those frames. See the [wire protocol](docs/PROTOCOL.md) and [folder transfer protocol](docs/folder-protocol.md) for details; these documents are currently in Chinese.
 
-## 参考
+There is no account service, cloud storage, or internet relay. The protocol currently provides neither peer authentication nor transport encryption, so use LocalChat on a trusted local network. Device names and types are self-reported.
 
-以本机安装 SDK 的声明和编译结果核对 API；官方入口：[mDNS](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-net-mdns)、[Socket](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-net-socket)。
+Attachments and received files are stored in the app's private storage unless exported. Export anything you need to keep before uninstalling the app or clearing its data. File size is constrained by available storage and the filesystem; the app does not impose a total file size limit. Interrupted transfers restart rather than resume from a byte offset. Folder transfers preserve content and structure, but do not synchronize platform-specific permissions or extended attributes.
 
-## v1.0.3 键盘与消息可见性
+HarmonyOS controls background execution. When networking is ready, the app requests a short suspension delay on entering the background, uses the duration granted by the system, and does not renew it repeatedly. Background reception is therefore limited and cannot replace cloud push notifications. Discovery and connections are recovered when the app returns to the foreground.
 
-聊天页启用键盘 RESIZE 避让：键盘弹出时收缩消息列表而非整体平移页面。发送后在下一帧布局完成时滚动到底部，输入栏保持在键盘上方；点击发送不主动转移输入框焦点。输入区聚焦或位于最新消息时，列表高度改变会重新定位底部；浏览旧消息时不强制跟随新消息。切换会话或离开页面会使旧滚动回调失效。
+System share contact recommendations additionally depend on Huawei Intents Kit enrollment and system availability. Ordinary sharing remains available if recommendations are unavailable.
 
-本版编译、签名和包内版本检查通过。当前未连接手机，键盘打开情况下的实际显示效果尚待真机复测。
+## Project layout
 
-## v1.0.8 交付记录
+```text
+AppScope/                    Application metadata and shared icons
+entry/src/main/ets/
+  background/                Short background receive window
+  entryability/              Application lifecycle and share entry
+  model/                     Models and app version
+  network/                   mDNS discovery, TCP connections, wire protocol
+  notifications/             Local notifications and unread badges
+  pages/                     ArkUI interface
+  store/                     Chat state, persistence, identity, folder transfers
+scripts/                     Build, package validation, and interoperability tests
+docs/                        Protocol documentation and device test notes
+distribution/                Icon assets and generated HAP packages
+```
 
-- 输入区默认一行，最多五行，保留键盘避让。
-- 聊天页进入和返回采用对应的横向过渡。
-- 桌面启用同源双气泡分层图标，启动页和首页使用合成图。
-- v1.0.8 构建、资源校验及设备安装成功；桌面裁切效果与动画观感尚未完成真机确认。
-- 核心与原始 Mac TCP 互通测试于 v1.0.7 通过，v1.0.8 仅调整图标资源与打包校验。
+## License
 
-## v1.0.9 消息提醒
-
-- 每条新文字或文件发送本地系统通知，点击通知进入对应会话。首次打开申请通知授权。
-- 联系人显示未读条数，桌面角标显示总未读；前台查看对应会话后清零，后台接收保留未读，状态随历史保存。
-- 使用社交通知渠道，实际横幅、声音和角标受系统通知设置控制。客户端被暂停或退出后无法保证局域网消息及时到达，本功能不是云推送。
-- ArkTS 构建、包资源校验、Node 适配器未读回归与原始 Mac TCP 互通测试通过。设备未连接，系统通知展示、授权弹窗、角标和通知跳转待真机验证。
-
-## v1.0.10 离线留言
-
-- 离线时可提交文字、图片和文件，持久化到本机并显示“等待对方上线”；重启后继续补发。附件使用应用内副本。
-- 两端之后必须同时运行邻聊且网络可互通；本功能不依赖云端，也不会在发送设备关机后代为转发。
-- 删除待发消息可取消补发；重试沿用消息 ID，已收到的消息或文件重复确认，不重复保存。
-- 建议两端都升级，尤其是断线后文件重试；系统后台限制仍然适用。手机真机离线恢复与 UI 尚待验证。
-
-## v1.0.11 原始发送时间
-
-文字和文件携带首次发送时保存的毫秒时间戳，离线补发、重启和重试保留原时间；接收端显示原发送日期和时间。旧客户端未携带时间时回退到接收时间。显示使用各设备当地时区。
-
-## v1.0.12 附件单独发送
-
-发送按钮不依赖文字输入状态；点击时检查实际附件队列，支持只发图片或只发文件。完全空白时提示添加内容，不创建空消息。纯图片、纯文件及空提交已加入平台适配器测试；按钮真机交互仍待验证。
-
-## v1.0.13 消息时间格式
-
-消息时间统一显示为 `YYYY-MM-DD HH:mm:ss`，使用设备当地时区及 24 小时制，月、日、时、分、秒补齐两位。
-
-## v1.0.15 输入区附件预览
-
-待发送图片及文件移入输入框内部，位于文字上方，与文字共用输入区背景。多附件横向滚动，支持移除及图片放大；发送按钮与输入区底部对齐。
-
-
-## v1.0.28 接收系统分享
-
-- 注册系统分享入口，接收本地文件、图片、文字及链接，每次最多 9 项；冷启动和已运行应用均由同一入口处理。
-- 外部文件先复制为应用内副本，再展示内容及接收设备列表。选择设备后点击“确认发送”；也可选择文件传输助手并确认保存。离线设备使用已有持久化补发队列。
-- 连续分享逐份确认；不会发送或清空当前对话草稿与原有附件。取消删除本次导入副本；读取失败回滚整份分享，保留源文件。
-- 未确认的分享只在当前进程暂存，应先确认发送或保存再退出应用。
-- 本版未安装设备。Node 适配器覆盖导入、确认、取消、失败重试和文件传输；系统分享匹配、跨应用 URI 授权及 ArkUI 交互仍待真机验证。
-
-真机验收：覆盖安装新版后，在文件管理中选单文件/多文件，在图库选单图/多图，打开系统分享并选择“邻聊”；分别在邻聊未运行、已打开聊天、打开图片预览时测试。检查选择在线设备并确认发送、选择离线设备排队、保存到文件助手、取消分享、系统返回、连续两次分享，以及原有聊天草稿和附件保持完整。每次最多分享 9 项，文件夹不支持。
-
-
-## v1.0.29 系统分享联系人推荐
-
-- 在“分享至邻聊”确认发送或保存成功后，将接收设备或文件传输助手作为 `SendMessage` / `Contact` 意图共享到系统推荐服务。仅共享联系人 ID、显示名称、同源应用图标及分享入口，不共享文件内容、文字或电话号码。离线接收人可在消息成功保存到待发队列后参与推荐。
-- 点击系统推荐联系人后，通过 Share Kit 的 `getContactInfo` 读取 ID，并在邻聊分享页预选对应接收人，保留文件预览及“确认发送/确认保存”。普通应用分享入口、不存在的联系人或解析失败仍进入手动选择，不沿用上次接收人。多次分享各自保存目标；删除设备时请求清除其系统推荐实体。
-- **外部接入条件**：需要按华为 Intents Kit 接入流程为 `com.hohode.localchat` 申请意图框架白名单及对应场景。应用代码已调用 `insightIntent.shareIntent`，但未注册可能返回 `1000101101`。本次未操作华为开发者后台，无法确认该包是否已开通。推荐服务失败只记录日志，不影响普通分享。系统决定推荐展示、排序和数量，不能保证每次出现。
-- 头像资源 `share_contact_icon.png` 从现有应用图标等比缩小到 96×96 PNG，避免把大尺寸应用图标作为意图数据上传。
-- 本次通过 ArkTS 构建、包内版本检查、Node 适配器推荐联系人回传/普通入口隔离/失效 ID/服务失败回退/清理回归及原始 Mac TCP 互通测试；未安装设备，尚未验证系统推荐面板实际展示。
-
-真机验收：先完成白名单接入 → 从文件管理分享至邻聊并确认发给某个设备 → 再次打开系统分享面板检查推荐 → 点击推荐项检查预选对象及文件预览 → 确认发送；分别检查普通邻聊入口、离线设备、多个分享排队、文件传输助手及删除设备后的推荐情况。推荐服务关闭或未开通时，普通分享应继续可用。
-
-接入文档：[共享联系人信息到分享推荐区](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/share-intents-share)、[Share Kit API](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/share-system-share)。本机 Intents Kit SDK 声明列出未注册错误码，代码接口以本机 SDK 及实际编译结果核对。
-
-
-## v1.0.30 分享时点击联系人直接发送
-
-系统分享面板选择邻聊后，接收页点击设备即保存到发送队列（离线设备上线后补发），点击文件传输助手即保存到本机；移除底部取消及确认按钮。仍保留内容预览、顶部系统返回图标及系统返回处理。发送过程中禁用联系人点击，避免重复提交；保存失败时保留本次分享以便重试。
-
-本版已通过 ArkTS 构建、包内版本检查、Node 平台适配器核心测试和原始 Mac TCP 互通测试。未安装设备，联系人点击、处理状态及系统返回的实际 UI 效果待真机验证。Intents Kit 联系人推荐接入暂不继续处理。
-
-## 文件夹直传（v1.0.31）
-
-聊天输入区新增“文件夹”入口，通过系统选择器选择文件夹，先复制到应用本机存储，再加入当前会话附件；点击发送后传送目录记录和原始文件内容，不压缩、不解压。文件传输助手也可保存文件夹。接收后得到完整目录，保留子目录、空目录、空文件和中文名称，同名根目录自动编号。
-
-“永久保存”对文件夹使用系统目录选择器，将完整目录移动到所选位置；已有同名目标时提示换位置或先重命名，不覆盖。失败时保留本机副本。
-
-Mac 与鸿蒙两端均需更新；旧客户端仍可收发普通文件，待发文件夹显示升级提示，保留队列。支持离线排队、重启恢复和重新发送；中断、取消、超时会清理未完成目录，不支持断点续传。
-
-限制及协议见 [docs/folder-protocol.md](docs/folder-protocol.md)。只传文件内容与目录结构，不跨平台同步权限或扩展属性。自动测试使用 Node 文件系统适配器和原始 Swift ChatStore 的隔离 TCP 服务，不接入正常会话；系统文件夹选择器、跨提供方目录导入/导出及实际手机 UI 仍需鸿蒙真机验证。
-
-## 聊天阅读位置（v1.0.32）
-
-按联系人分别保存阅读位置，重新打开或重启应用后恢复。有未读消息时打开对话直接定位到最新记录；没有未读消息时恢复上次位置，首次打开默认最新。正在翻看旧记录时，新消息与输入框获得焦点不会强制拉到底部；停在底部时继续跟随新消息。
-
-聊天记录右下角新增“回到最新”按钮，点击可清除搜索并回到最新记录。搜索中的位置不覆盖正常阅读位置；发送消息后定位到最新。
-
-`node scripts/test-core.cjs` 同时运行真实页面控制器的 Node UI 适配器测试，覆盖位置持久化、未读判断、快速切换、搜索隔离、返回、通知入口和最新记录操作。ArkUI 编译与适配器验证不等于真机 UI 验证；手机及平板上的滑动、键盘和页面动画仍需实测。
-
-## 文件夹永久保存修复（v1.0.33）
-
-修复“永久保存”出现 `Invalid argument` 的目录参数问题：复制文件夹时，将系统选择器返回的现有父目录 URI 原样传给复制接口，由系统在里面创建源文件夹。保存位置通过 URI 的路径段接口生成，支持中文、空格、百分号和井号名称；同名目标仍拒绝覆盖。复制失败时保留应用内完整源文件夹，重复点击不会同时移动同一项。
-
-选择文件夹加入附件时使用同样的原生目录复制约定：先复制到独立的、已经创建的临时父目录，检查目录内容后再发布到应用文件区，失败清理临时目录，避免重复嵌套根文件夹。
-
-Node 适配器现按 OpenHarmony 的“现有父目录 + 源目录名”规则复制，补充了旧参数触发错误、中文及特殊字符目录、文件提供方 URI、部分复制失败、失败后重试和重复点击测试。参考 [OpenHarmony 6.0 FileCopyManager 的目录复制实现](https://github.com/openharmony/filemanagement_dfs_service/blob/OpenHarmony-6.0-Release/frameworks/native/distributed_file_inner/src/copy/file_copy_manager.cpp)。这些检查不替代鸿蒙真机的系统文件选择器与权限验证。
-
-## 文件夹保存的 URI 运行时修复（v1.0.35）
-
-修复手机报错 `addSegment is not callable / undefined`：不再调用 `FileUri` 对象上仅在 SDK 继承声明中出现的 URI 方法，改用 `@kit.ArkTS` 导出的独立 `uri.URI` 实例处理目标路径段，`FileUri` 仅用于其原生文件 URI 功能。目录复制继续使用系统选择器返回的现有父目录 URI。
-
-测试适配器将 FileUri 与 URI 分成独立运行时类型，FileUri 不再提供 `addSegment`、`getSegment`；新增缺失方法的错误复现，并在这一约束下运行整目录保存、中文及特殊字符路径、同名保护和失败保留源文件夹的测试。构建及 Node 验证仍不等同于鸿蒙真机验证。
-
-## 后台返回前台后的局域网恢复（v1.0.36）
-
-修复应用从后台回到前台后双方无法重新发现设备的问题：第一次进入前台正常启动网络；从后台返回时，重新创建 TCP 监听、发布当前监听端口并新建 mDNS 发现对象，不再复用可能已被系统挂起的原生对象。启动、刷新、恢复及停止按顺序执行，旧的发现事件、监听回调和异步解析结果不会影响新的网络状态。
-
-能响应心跳的已有 TCP 连接继续使用；旧连接在恢复时探测，10 秒内无回应则关闭并重连。监听或发现中断、广播注册失败时，每 5 秒重试；无法完成的原生启动、发现和解析操作有超时，失败的旧广播注销会再次尝试，避免一直停在假“已启动”状态。设备发现启动返回错误码 0 时按成功处理。
-
-`node scripts/test-core.cjs` 增加原生网络适配器及实际 EntryAbility 生命周期回调测试，覆盖并发启动、前台资源重建、广播端口更新、旧事件和解析隔离、无响应连接、服务注销/注册失败、发现启动超时、解析超时、停止期间的恢复取消及再次启动。原始 Mac TCP 聊天和文件夹互通测试仍使用隔离本机服务；这些检查不等于鸿蒙真机的系统 mDNS 或后台调度实测。
-
-
-## 退后台短时消息收发窗口（v1.0.51）
-
-局域网已就绪时，EntryAbility 在 onBackground 内同步调用 requestSuspendDelay，申请延后挂起，继续使用现有 TCP/mDNS 与消息通知逻辑。无须新增 KEEP_BACKGROUND_RUNNING 权限，也不会创建数据传输长时任务或常驻通知。实际时长取系统返回的 actualDelayTime，并记录在 LocalChat 日志；不承诺每次达到几分钟。
-
-同一次退后台只申请一次，到期保存聊天状态并取消申请，不循环续期；回前台或销毁 Ability 时释放请求，避免继续消耗短时任务额度。系统额度不足或服务不可用时捕获异常，返回前台沿用现有网络重建逻辑。短时任务有系统额度与电量限制，不能替代长期后台推送。
-
-构建、Node 后台任务适配器及原始 Mac TCP 互通测试通过；未安装设备，实际息屏、后台收消息通知和系统授予时长尚待真机验证。
+[MIT](LICENSE)
